@@ -1,0 +1,11 @@
+# Tested on Python 3.14 / Windows 11 with: streamlit 1.66.0, plotly 7.1.0, pandas 3.0.6, numpy 2.5.4,
+# comtypes 1.4.17, pytest 9.1.1, ruff 0.17.1
+streamlit>=1.50,<2
+plotly>=6.0,<8
+pandas>=2.2,<4
+numpy>=2.0,<3
+comtypes>=1.4; sys_platform == "win32"   # Windows SAPI voice
+
+# development / tests
+pytest>=8
+ruff>=0.6

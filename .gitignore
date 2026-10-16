@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.playwright-mcp/
+.env
+data/*
+!data/.gitkeep

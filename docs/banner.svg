@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="t d">
+  <title id="t">PurpleSector</title>
+  <desc id="d">F1 22 live telemetry dashboard and offline race engineer. A timing strip shows a purple, a yellow and a purple sector next to a live speed, throttle and brake trace.</desc>
+  <defs>
+    <clipPath id="card"><rect width="1280" height="420" rx="18"/></clipPath>
+    <clipPath id="plot"><rect x="742" y="70" width="476" height="280" rx="10"/></clipPath>
+    <linearGradient id="fill" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#A66CFF" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#A66CFF" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#232833" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <g clip-path="url(#card)">
+    <rect width="1280" height="420" fill="#171A21"/>
+    <rect width="1280" height="420" fill="url(#grid)" opacity=".6"/>
+    <rect width="8" height="420" fill="#A66CFF"/>
+
+    <g font-family="Bahnschrift, 'DIN Alternate', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+      <!-- left column -->
+      <text x="62" y="112" font-size="80" font-weight="700" fill="#E9ECF2">Purple<tspan fill="#A66CFF">Sector</tspan></text>
+      <text x="66" y="152" font-size="23" fill="#8D94A3">Live F1 22 telemetry and a race engineer</text>
+      <text x="66" y="181" font-size="23" fill="#8D94A3">that only speaks when the data backs it up.</text>
+
+      <g transform="translate(64 212)">
+        <rect width="196" height="72" rx="8" fill="#A66CFF"/>
+        <text x="15" y="26" font-size="16" fill="#F3EBFF">S1 · session best</text>
+        <text x="15" y="58" font-size="29" font-weight="700" fill="#FFFFFF">24.972</text>
+        <rect x="208" width="196" height="72" rx="8" fill="#F2C94C"/>
+        <text x="223" y="26" font-size="16" fill="#2A2100">S2 · +0.184 slower</text>
+        <text x="223" y="58" font-size="29" font-weight="700" fill="#2A2100">31.734</text>
+        <rect x="416" width="196" height="72" rx="8" fill="#A66CFF"/>
+        <text x="431" y="26" font-size="16" fill="#F3EBFF">S3 · session best</text>
+        <text x="431" y="58" font-size="29" font-weight="700" fill="#FFFFFF">29.235</text>
+      </g>
+
+      <g transform="translate(64 304)">
+        <rect width="612" height="64" rx="10" fill="#1F232C" stroke="#2C313C"/>
+        <circle cx="30" cy="32" r="7" fill="#FF5C5C"/>
+        <text x="50" y="26" font-size="15" fill="#8D94A3">Race engineer · high confidence · based on game timing</text>
+        <text x="50" y="50" font-size="20" font-weight="600" fill="#E9ECF2">"Personal best by 0.08 seconds. Nice lap."</text>
+      </g>
+
+      <!-- right column: live trace panel -->
+      <rect x="742" y="70" width="476" height="280" rx="10" fill="#1F232C" stroke="#2C313C"/>
+      <g clip-path="url(#plot)">
+        <g transform="translate(0 52) scale(1 0.85)">  <!-- keep the trace below the readout -->
+        <path d="M742 300 L790 214 L850 150 L896 146 L910 292 L944 292 L992 210 L1022 206 L1034 252 L1060 252 L1112 156 L1140 152 L1152 300 L1178 300 L1218 236 L1218 350 L742 350 Z" fill="url(#fill)"/>
+        <path d="M742 300 L790 214 L850 150 L896 146 L910 292 L944 292 L992 210 L1022 206 L1034 252 L1060 252 L1112 156 L1140 152 L1152 300 L1178 300 L1218 236"
+              fill="none" stroke="#A66CFF" stroke-width="3.5" stroke-linejoin="round"/>
+        <!-- brake spikes -->
+        <path d="M898 338 L900 312 L910 312 L912 338 M1024 338 L1026 322 L1034 322 L1036 338 M1142 338 L1144 312 L1152 312 L1154 338"
+              fill="none" stroke="#FF5C5C" stroke-width="3"/>
+        </g>
+      </g>
+      <text x="762" y="102" font-size="15" fill="#8D94A3">Speed</text>
+      <text x="1198" y="102" font-size="15" fill="#8D94A3" text-anchor="end">Gear</text>
+      <text x="762" y="146" font-size="44" font-weight="700" fill="#E9ECF2">312<tspan font-size="17" fill="#8D94A3" dx="6">km/h</tspan></text>
+      <text x="1198" y="146" font-size="44" font-weight="700" fill="#A66CFF" text-anchor="end">8</text>
+      <text x="742" y="384" font-size="15" fill="#8D94A3">Live speed and brake trace · 60 Hz · fully offline</text>
+    </g>
+  </g>
+</svg>

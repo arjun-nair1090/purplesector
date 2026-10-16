@@ -1,0 +1,19 @@
+[browser]
+gatherUsageStats = false   # no data leaves this PC
+
+[server]
+headless = true
+address = "localhost"     # dashboard only reachable from this PC; see README to view on a tablet
+runOnSave = false
+fileWatcherType = "none"   # avoid reloading modules (and rebinding the UDP port) mid-session
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+primaryColor = "#A66CFF"
+backgroundColor = "#171A21"
+secondaryBackgroundColor = "#1F232C"
+textColor = "#E9ECF2"
+font = "Bahnschrift, 'Segoe UI', sans-serif"

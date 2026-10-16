@@ -1,0 +1,112 @@
+import json
+
+import pandas as pd
+from conftest import wait_until
+
+from analysis.lap_tracker import CompletedLap
+from storage.database import connect, init_db
+from storage.session_repository import SessionRepository
+from storage.telemetry_writer import TelemetryWriter
+
+
+def lap(n, ms=90000, valid=True, samples=3):
+    rows = [(0.1 * i, 100 * i, 10.0 * i, 200.0, 100.0, 0.0, 0.0, 7, 11000) for i in range(samples)]
+    return CompletedLap(n, ms, 30000, 30000, ms - 60000, valid=valid, samples_complete=True, pit_lap=False,
+                        out_lap=False, samples=rows, max_speed_kph=200.0)
+
+
+def test_schema_created_and_versioned(tmp_path):
+    db = tmp_path / "x.db"
+    assert init_db(db) == 0
+    with connect(db) as c:
+        assert c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"sessions", "laps", "samples", "meta"} <= tables
+
+
+def test_save_load_and_recovery(tmp_path):
+    db = tmp_path / "x.db"
+    init_db(db)
+    repo = SessionRepository(db)
+    sid = repo.create_session(123, "live")
+    repo.update_session(sid, track_name="Monza", track_id=11, session_type="Race")
+    repo.save_lap(sid, lap(1), lap(1).samples)
+    repo.save_lap(sid, lap(2, 89000), lap(2).samples)
+    repo.save_lap(sid, lap(2, 88000), lap(2, samples=5).samples)  # re-run lap 2 replaces, never duplicates
+    laps = repo.laps(sid)
+    assert laps.lap_number.tolist() == [1, 2] and laps.lap_time_ms.tolist() == [90000, 88000]
+    lap2 = int(laps.id.iloc[1])
+    assert len(repo.lap_samples(lap2)) == 5
+    s = repo.list_sessions().iloc[0]
+    assert s.best_lap_ms == 88000 and s.status == "recording" and s.track_name == "Monza"
+    empty = repo.create_session(124, "live")  # crashed before its first lap
+    # app "crashes": next startup marks them interrupted and drops the empty one
+    assert init_db(db) == 2
+    assert repo.get_session(sid)["status"] == "interrupted" and repo.get_session(empty) is None
+    assert repo.create_session(123, "live") != sid
+
+
+def test_reference_laps_exclude_demo_and_invalid(tmp_path):
+    db = tmp_path / "x.db"
+    init_db(db)
+    repo = SessionRepository(db)
+    live, demo = repo.create_session(1, "live", "Spa"), repo.create_session(2, "demo", "Spa")
+    repo.save_lap(live, lap(1, 100000), [])
+    repo.save_lap(live, lap(2, 99000, valid=False), [])
+    repo.save_lap(demo, lap(1, 50000), [])
+    refs = repo.reference_laps("Spa")
+    assert refs.lap_time_ms.tolist() == [100000]
+    assert repo.reference_laps("Spa", include_demo=True).lap_time_ms.tolist() == [50000, 100000]
+
+
+def test_export_and_delete(tmp_path):
+    db = tmp_path / "x.db"
+    init_db(db)
+    repo = SessionRepository(db)
+    sid = repo.create_session(5, "demo", "Demo Ring (synthetic)")
+    repo.save_lap(sid, lap(1), lap(1).samples)
+    csv_path = repo.export_csv(sid, tmp_path / "exports")
+    df = pd.read_csv(csv_path)
+    assert len(df) == 3 and "lap_distance" in df and "demo" in csv_path.name
+    doc = json.loads(repo.export_json(sid, tmp_path / "exports").read_text(encoding="utf-8"))
+    assert doc["session"]["source"] == "demo" and doc["laps"][0]["lap_time_ms"] == 90000
+    assert len(doc["samples"]["rows"]) == 3
+    assert repo.delete_session(sid)
+    with connect(db) as c:
+        assert c.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 0  # cascade
+        assert c.execute("SELECT COUNT(*) FROM laps").fetchone()[0] == 0
+
+
+def test_writer_thread_persists_and_flushes(tmp_path):
+    db = tmp_path / "x.db"
+    init_db(db)
+    repo = SessionRepository(db)
+    w = TelemetryWriter(repo)
+    w.start()
+    w.start_session("k", 77, "live")
+    lp = lap(1)
+    w.save_lap("k", lp)
+    lp.samples = []  # tracker trimming after enqueue must not affect what is written
+    w.end_session("k")
+    w.stop()
+    assert w.laps_written == 1 and w.last_error is None
+    s = repo.list_sessions().iloc[0]
+    assert s.status == "complete" and s.laps == 1
+    assert len(repo.lap_samples(int(repo.laps(int(s.id)).id[0]))) == 3
+
+
+def test_writer_survives_db_errors(tmp_path):
+    db = tmp_path / "x.db"
+    init_db(db)
+    w = TelemetryWriter(SessionRepository(db))
+    w.start()
+    w.save_lap("unknown-recording", lap(1))
+    assert wait_until(lambda: w.last_error is not None)
+    w.start_session("k", 1, "live")
+    w.save_lap("k", lap(1))
+    w.end_session("k")
+    w.start_session("empty", 2, "live")  # ended before any lap completed: not kept
+    w.end_session("empty")
+    w.stop()
+    sessions = SessionRepository(db).list_sessions()
+    assert len(sessions) == 1 and sessions.iloc[0].status == "complete"

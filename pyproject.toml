@@ -1,0 +1,18 @@
+[project]
+name = "purplesector"
+version = "1.0.0"
+description = "F1 22 real-time telemetry dashboard and offline voice race engineer"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]
+ignore = ["B008", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
