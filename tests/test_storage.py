@@ -19,9 +19,31 @@ def test_schema_created_and_versioned(tmp_path):
     db = tmp_path / "x.db"
     assert init_db(db) == 0
     with connect(db) as c:
-        assert c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
+        assert c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "2"
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"sessions", "laps", "samples", "meta"} <= tables
+
+
+def test_v1_database_upgrades_in_place(tmp_path):
+    """A v1 database (before positions, fuel/tyre use and imports) keeps its laps and gains the new columns."""
+    from storage.database import SCHEMA
+    db = tmp_path / "old.db"
+    with connect(db) as c:
+        c.executescript(SCHEMA)
+        c.execute("INSERT INTO meta VALUES ('schema_version', '1')")
+        c.execute("INSERT INTO sessions (session_uid, source, track_name, started_at, status) "
+                  "VALUES ('1', 'live', 'Spa', '2026-01-01T10:00:00', 'complete')")
+        c.execute("INSERT INTO laps (session_id, lap_number, lap_time_ms, valid, samples_complete, pit_lap, out_lap) "
+                  "VALUES (1, 1, 106000, 1, 1, 0, 0)")
+    init_db(db)
+    init_db(db)  # idempotent
+    repo = SessionRepository(db)
+    s = repo.list_sessions().iloc[0]
+    assert s.imported == 0 and s.best_lap_ms == 106000
+    assert repo.laps(1).fuel_used_kg.isna().all()
+    sid = repo.create_session(2, "live", "Spa")
+    repo.save_lap(sid, lap(1), [(0.0, 0, 0.0, 200.0, 100.0, 0.0, 0.0, 7, 11000, 1.0, 2.0, 3.0)])
+    assert repo.lap_samples(int(repo.laps(sid).id[0])).pos_z.tolist() == [3.0]
 
 
 def test_save_load_and_recovery(tmp_path):

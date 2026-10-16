@@ -14,7 +14,9 @@ from telemetry.decoder import (
 )
 from telemetry.packet_models import (
     PACKET_SIZES,
+    ButtonDetails,
     CarDamageData,
+    CarMotionData,
     CarStatusData,
     CarTelemetryData,
     FastestLapDetails,
@@ -31,12 +33,13 @@ from telemetry.packet_models import (
 
 def test_record_sizes_match_f1_22_spec():
     assert HEADER_SIZE == 24
-    sizes = {CarTelemetryData: 60, LapData: 43, CarStatusData: 47, CarDamageData: 42, ParticipantData: 56,
+    sizes = {CarMotionData: 60, CarTelemetryData: 60, LapData: 43, CarStatusData: 47, CarDamageData: 42, ParticipantData: 56,
              LapHistoryData: 11, SessionHistoryHeader: 7}
     for cls, n in sizes.items():
         assert record_struct(cls).size == n, cls.__name__
     # whole-packet totals from the spec
     assert HEADER_SIZE + 22 * 60 + 3 == PACKET_SIZES[PacketId.CAR_TELEMETRY] == 1347
+    assert HEADER_SIZE + 22 * 60 + 30 * 4 == PACKET_SIZES[PacketId.MOTION] == 1464  # + 30 player-only floats
     assert HEADER_SIZE + 22 * 43 + 2 == PACKET_SIZES[PacketId.LAP_DATA] == 972
     assert HEADER_SIZE + 22 * 47 == PACKET_SIZES[PacketId.CAR_STATUS] == 1058
     assert HEADER_SIZE + 22 * 42 == PACKET_SIZES[PacketId.CAR_DAMAGE] == 948
@@ -113,6 +116,52 @@ def test_session_packet_and_safety_car_offset():
         (3, -2, 5891, 10, 7, 2)
 
 
+def test_session_pit_window_at_spec_offset():
+    """Ideal/latest pit lap and rejoin position sit at bytes 613..615; 16 bytes of assists etc. follow."""
+    s = SessionData(pit_window_ideal_lap=18, pit_window_latest_lap=23, pit_rejoin_position=7)
+    raw = pb.build_session(pb.header(PacketId.SESSION), s)
+    assert raw[613:616] == bytes((18, 23, 7)) and len(raw) - 616 == 16
+    d = decode_packet(raw).data
+    assert (d.pit_window_ideal_lap, d.pit_window_latest_lap, d.pit_rejoin_position) == (18, 23, 7)
+
+
+def test_lap_data_keeps_every_car():
+    raw = pb.build_cars(pb.header(PacketId.LAP_DATA, player=1),
+                        {0: LapData(car_position=1, total_distance=900.0, result_status=2),
+                         1: LapData(car_position=2, total_distance=850.0, result_status=2),
+                         21: LapData(car_position=3, total_distance=10.0, result_status=2)})
+    p = decode_packet(raw)
+    assert len(p.cars) == 22 and p.data is p.cars[1]
+    assert [c.car_position for c in (p.cars[0], p.cars[1], p.cars[21])] == [1, 2, 3]
+    assert p.cars[21].total_distance == 10.0 and p.cars[5].result_status == 0
+
+
+def test_motion_positions_hand_built():
+    buf = bytearray(PACKET_SIZES[PacketId.MOTION])
+    struct.pack_into("<HBBBBQfIBB", buf, 0, 2022, 1, 0, 1, 0, 1, 1.0, 1, 3, 255)
+    struct.pack_into("<3f", buf, HEADER_SIZE + 3 * 60, -120.5, 4.25, 880.0)
+    struct.pack_into("<3f", buf, HEADER_SIZE + 7 * 60, 15.0, 0.0, -40.0)
+    p = decode_packet(bytes(buf))
+    assert p.data.position == (-120.5, 4.25, 880.0)
+    assert p.cars[7].position == (15.0, 0.0, -40.0)
+
+
+def test_participants_keep_all_names_and_active_count():
+    raw = pb.build_cars(pb.header(PacketId.PARTICIPANTS), {0: ParticipantData(name=b"ME"),
+                                                           4: ParticipantData(name=b"RIVAL", race_number=44)},
+                        prefix=bytes([20]))
+    p = decode_packet(raw)
+    assert p.num_active_cars == 20 and p.cars[4].name.rstrip(bytes(1)) == b"RIVAL" and p.cars[4].race_number == 44
+
+
+def test_button_event_and_udp_action_bits():
+    from telemetry.packet_models import udp_action_bit
+    assert udp_action_bit(1) == 0x00100000 and udp_action_bit(12) == 0x80000000
+    raw = pb.build_event(pb.header(PacketId.EVENT), "BUTN", ButtonDetails(udp_action_bit(3) | 0x0001))
+    d = decode_packet(raw).data
+    assert d.code == "BUTN" and d.details.button_status & udp_action_bit(3)
+
+
 def test_event_packets():
     d = decode_packet(pb.build_event(pb.header(PacketId.EVENT), "SSTA")).data
     assert d.code == "SSTA" and d.details is None
@@ -172,7 +221,7 @@ def test_rejects_short_header_and_unknown_id():
 
 
 def test_unused_packet_types_are_ignored_not_decoded():
-    for pid in (PacketId.MOTION, PacketId.CAR_SETUPS, PacketId.FINAL_CLASSIFICATION, PacketId.LOBBY_INFO):
+    for pid in (PacketId.CAR_SETUPS, PacketId.FINAL_CLASSIFICATION, PacketId.LOBBY_INFO):
         with pytest.raises(IgnoredPacketError):
             decode_packet(pb.build_packet(pb.header(pid)))
 

@@ -48,6 +48,8 @@ class Settings:
     data_dir: str = "data"
     demo_scenario: str = "standard"
     demo_speed: float = 1.0
+    radio_button: int = 0              # F1 22 "UDP Action" button (1..12) that asks for a status call; 0 = off
+    overlay_port: int = 8777           # localhost endpoint the always-on-top overlay reads
 
     @property
     def data_path(self) -> Path:
@@ -79,6 +81,11 @@ class Settings:
         _range(e, "history_window_s", self.history_window_s, 5, 300)
         _range(e, "ui_refresh_ms", self.ui_refresh_ms, 100, 2000)
         _range(e, "demo_speed", self.demo_speed, 0.25, 8)
+        _range(e, "radio_button", self.radio_button, 0, 12)
+        if not 1024 <= self.overlay_port <= 65535:
+            e["overlay_port"] = "Port must be between 1024 and 65535."
+        elif self.overlay_port == self.udp_port:
+            e["overlay_port"] = "Must differ from the UDP telemetry port."
         if not str(self.data_dir).strip():
             e["data_dir"] = "Data directory cannot be empty."
         else:

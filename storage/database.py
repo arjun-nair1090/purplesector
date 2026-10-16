@@ -56,7 +56,18 @@ CREATE INDEX IF NOT EXISTS samples_by_lap ON samples (lap_id);
 CREATE INDEX IF NOT EXISTS laps_by_session ON laps (session_id);
 """
 
-MIGRATIONS: dict[int, str] = {}
+MIGRATIONS: dict[int, str] = {
+    # v2: track map positions, per-lap fuel/tyre use, imported laps from other drivers
+    2: """
+    ALTER TABLE samples ADD COLUMN pos_x REAL;
+    ALTER TABLE samples ADD COLUMN pos_y REAL;
+    ALTER TABLE samples ADD COLUMN pos_z REAL;
+    ALTER TABLE laps ADD COLUMN fuel_used_kg REAL;
+    ALTER TABLE laps ADD COLUMN tyre_wear_pct REAL;
+    ALTER TABLE sessions ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN driver_name TEXT;
+    """,
+}
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -81,8 +92,12 @@ def init_db(path: Path) -> int:
             if version > SCHEMA_VERSION:
                 raise RuntimeError(f"Database schema v{version} is newer than this app (v{SCHEMA_VERSION}).")
             for v in range(version + 1, SCHEMA_VERSION + 1):
-                if v in MIGRATIONS:
-                    conn.executescript(MIGRATIONS[v])
+                for stmt in filter(str.strip, MIGRATIONS.get(v, "").split(";")):
+                    try:
+                        conn.execute(stmt)
+                    except sqlite3.OperationalError as exc:  # re-run after a half-applied upgrade
+                        if "duplicate column" not in str(exc):
+                            raise
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             cur = conn.execute("UPDATE sessions SET status = 'interrupted' WHERE status = 'recording'")
             # a crash before the first completed lap leaves an empty shell: drop it

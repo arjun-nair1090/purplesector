@@ -1,10 +1,13 @@
-"""Live page: fast fragment for readouts, slower fragment for charts/stats/diagnostics."""
+"""Live page: fast fragment for readouts; slower fragments for traces, the race row (map, gaps, fuel) and stats."""
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 
 import streamlit as st
 
+from config.defaults import PROJECT_ROOT
 from config.settings import recent_errors
 from service import get_service
 from telemetry.connection import ConnectionState
@@ -68,11 +71,35 @@ def render() -> None:
                         f'{svc.settings.history_window_s} s of speed, throttle, brake and steering.</div>')
         with right:
             st.html(c.car_block(svc.state.snapshot()))
+
+    @st.fragment(run_every=max(0.5, refresh * 2))
+    def race():
+        snap = svc.state.snapshot()
+        m, g, s = st.columns([1.35, 1, 1])
+        with m:
+            view = svc.map_view()
+            if view["map"] is not None:
+                st.plotly_chart(c.track_map_chart(view["map"], view["dots"]), key="live_map",
+                                config={"displayModeBar": False, "responsive": True})
+                n = len(view["map"].corners)
+                st.caption(f"Outline from {view['source']}. Corner numbers 1–{n} are detected from your speed "
+                           "trace, not the circuit's official turn numbers." if n else f"Outline from {view['source']}.")
+            else:
+                st.html('<div class="ps-panel ps-meta" style="min-height:340px">The track map draws itself from '
+                        'your first complete lap with position data (or your recorded best on this track). '
+                        'Live dots then show every car.</div>')
+        g.html(c.gaps_block(svc.gaps_view(), snap))
+        s.html(c.strategy_block(svc.strategy_view()))
+
+    @st.fragment(run_every=max(1.0, refresh * 4))
+    def summary():
         _stats(svc)
         _diagnostics(svc)
 
     readouts()
     charts()
+    race()
+    summary()
 
 
 def _stats(svc) -> None:
@@ -156,9 +183,20 @@ def sidebar() -> None:
         v = st.toggle("Voice coach", value=s.voice_enabled)
         if v != s.voice_enabled:
             svc.update_settings(voice_enabled=v)
-        if st.button("Test voice", width="stretch"):
+        a, b = st.columns(2)
+        if a.button("Test voice", width="stretch"):
             if not svc.voice.test():
                 st.warning(svc.voice.last_error or "Voice output is unavailable.")
+        if b.button("Radio check", width="stretch",
+                    help="Your engineer reads out delta, gaps and fuel now. "
+                         + (f"Wheel button: UDP Action {s.radio_button}." if s.radio_button
+                            else "Assign a wheel button under Settings → Radio on request.")):
+            svc.radio_check()
+        if st.button("Open overlay", width="stretch", disabled=svc.overlay_server is None,
+                     help="Small always-on-top window with delta, gear, gaps and the last call. Needs F1 22 in "
+                          "borderless or windowed mode. Drag to move, right-click to close."
+                     if svc.overlay_server else f"Overlay endpoint unavailable: port {s.overlay_port} is in use."):
+            _open_overlay(s.overlay_port)
         if svc.voice.status == "unavailable":
             st.caption(f"Voice unavailable: {svc.voice.last_error}")
         r = st.toggle("Record sessions", value=s.recording_enabled,
@@ -167,3 +205,9 @@ def sidebar() -> None:
             svc.set_recording(r)
         if svc.settings_errors:
             st.warning("Some settings were invalid and reset to defaults. See Settings.")
+
+
+def _open_overlay(port: int) -> None:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console window behind the overlay on Windows
+    subprocess.Popen([sys.executable, str(PROJECT_ROOT / "overlay.py"), "--port", str(port)], creationflags=flags)
+    st.toast("Overlay opened. Drag it into place; right-click it to close.")

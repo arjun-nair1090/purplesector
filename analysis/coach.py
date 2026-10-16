@@ -15,6 +15,7 @@ from enum import IntEnum, StrEnum
 from analysis.lap_comparison import compare_laps, samples_frame
 from analysis.lap_tracker import CompletedLap
 from analysis.statistics import brake_rise_times
+from analysis.track_map import corners_in
 
 
 class Priority(IntEnum):
@@ -137,8 +138,10 @@ def rule_sector_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s: 
                       speech=f"Sector {worst + 1} was {deltas[worst]:.1f} slower than your best.")
 
 
-def rule_segment_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s: float) -> CoachEvent | None:
-    """Largest distance-aligned loss vs the best lap, with the measured input differences there."""
+def rule_segment_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s: float,
+                      corners=None) -> CoachEvent | None:
+    """Largest distance-aligned loss vs the best lap, with the measured input differences there.
+    `corners` (from the track map) only adds a name to the location."""
     if (not lap.timed or best is None or best is lap or not lap.samples_complete or not best.samples_complete):
         return None
     cmp = compare_laps(samples_frame(lap.samples), samples_frame(best.samples), lap_time_ms=lap.lap_time_ms,
@@ -147,15 +150,18 @@ def rule_segment_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s:
         return None
     seg = cmp.segments[0]
     obs = seg.observations()
-    where = f"{seg.start_m:.0f}–{seg.end_m:.0f} m"
+    corner = corners_in(corners or [], seg.start_m, seg.end_m)
+    where = f"{seg.start_m:.0f}–{seg.end_m:.0f} m" + (f" ({corner})" if corner else "")
     msg = f"Lost {seg.time_delta_s:.2f} s vs best lap at {where}"
-    speech = f"Lost {seg.time_delta_s:.1f} around {int(round(seg.start_m, -2))} metres versus your best lap."
+    place = corner or f"around {int(round(seg.start_m, -2))} metres"
+    speech = f"Lost {seg.time_delta_s:.1f} {'at ' + place if corner else place} versus your best lap."
     if obs:
         msg += ". Observed: " + "; ".join(obs).lower()
         speech += f" {obs[0]}."
     return CoachEvent("segment_loss", Category.DRIVING_INPUTS, msg, Priority.MEDIUM, Confidence.MEDIUM,
                       f"Distance-aligned telemetry vs lap {best.lap_number}; input differences are observations, "
-                      "not proven causes", speech=speech)
+                      "not proven causes" + ("; corner numbers are detected from your speed trace" if corner else ""),
+                      speech=speech)
 
 
 def rule_brake_abruptness(lap: CompletedLap, previous: list[CompletedLap], ratio: float, min_diff_s: float,
@@ -176,6 +182,45 @@ def rule_brake_abruptness(lap: CompletedLap, previous: list[CompletedLap], ratio
                       Confidence.MEDIUM, f"Median brake rise {cur_m * 1000:.0f} ms vs {ref_m * 1000:.0f} ms "
                       f"over {len(ref_medians)} previous laps ({len(cur)} brake applications)",
                       speech="Brake input is unusually abrupt compared with your previous laps.")
+
+
+def _say_s(x: float) -> str:
+    return f"{'minus' if x < 0 else 'plus'} {abs(x):.1f}"
+
+
+def radio_report(n: int, *, delta_s=None, delta_ref=None, gaps=None, fuel_margin_laps=None,
+                 fuel_margin_source=None, last_lap_ms=None) -> CoachEvent:
+    """The status call the driver asked for (wheel button or Radio check). Only facts that are available
+    right now are read out; nothing is filled in."""
+    parts, said = [], []
+    if delta_s is not None:
+        parts.append(f"Delta {fmt_signed(delta_s)} s vs {delta_ref}")
+        said.append(f"Delta {_say_s(delta_s)}.")
+    elif last_lap_ms:
+        parts.append(f"Last lap {fmt_lap(last_lap_ms)}")
+        said.append(f"Last lap {_spoken_time(last_lap_ms)}.")
+    for key, label in (("ahead", "ahead"), ("behind", "behind")):
+        g = (gaps or {}).get(key)
+        if g is None or g.gap_s is None:
+            continue
+        trend = ""
+        if g.change_per_lap_s is not None and abs(g.change_per_lap_s) >= 0.05:
+            closing = g.change_per_lap_s < 0
+            trend = f", {'closing' if closing else 'opening'} {abs(g.change_per_lap_s):.1f} a lap"
+        parts.append(f"P{g.position} {g.name} {label} {g.gap_s:.1f} s{trend}")
+        said.append(f"Gap {label} {g.gap_s:.1f}{trend}.")
+    if fuel_margin_laps is not None:
+        parts.append(f"Fuel {fmt_signed(fuel_margin_laps, 1)} laps ({fuel_margin_source})")
+        said.append(f"Fuel {_say_s(fuel_margin_laps)} laps.")
+    if not parts:
+        return CoachEvent(f"radio:{n}", Category.SYSTEM, "Radio check: no live data yet", Priority.HIGH,
+                          Confidence.HIGH, "Requested status report", speech="No data yet.")
+    return CoachEvent(f"radio:{n}", Category.SESSION, "Radio: " + ". ".join(parts), Priority.HIGH, Confidence.HIGH,
+                      "Requested status report from live telemetry", speech=" ".join(said))
+
+
+def fmt_signed(x: float, places: int = 3) -> str:
+    return f"{x:+.{places}f}".replace("-", "−")
 
 
 # ---------------- coach (stateful filters) ----------------
@@ -215,7 +260,7 @@ class Coach:
         return True
 
     def on_lap_completed(self, lap: CompletedLap, tracker, alltime_ms: int | None = None,
-                         track: str | None = None) -> list[CoachEvent]:
+                         track: str | None = None, corners=None) -> list[CoachEvent]:
         """`tracker.laps` already contains `lap` as its last entry. `alltime_ms` is the recorded best
         on this track from earlier sessions (None if there is no history)."""
         c = self.config
@@ -229,7 +274,7 @@ class Coach:
         if prev_best is not None and lap is not prev_best:
             candidates += [
                 rule_sector_loss(lap, prev_best, c.sector_loss_threshold_s),
-                rule_segment_loss(lap, prev_best, c.segment_loss_threshold_s),
+                rule_segment_loss(lap, prev_best, c.segment_loss_threshold_s, corners),
             ]
         candidates.append(rule_brake_abruptness(lap, previous, c.brake_abrupt_ratio, c.brake_min_diff_s,
                                                 c.min_reference_laps))

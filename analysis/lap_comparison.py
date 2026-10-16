@@ -32,7 +32,9 @@ CHANNELS = ("lap_ms", "speed", "throttle", "brake", "steer", "gear")
 
 
 def samples_frame(samples) -> pd.DataFrame:
-    return pd.DataFrame(list(samples), columns=list(SAMPLE_FIELDS))
+    rows = list(samples)
+    width = len(rows[0]) if rows else len(SAMPLE_FIELDS)  # tuples without positions are fine
+    return pd.DataFrame(rows, columns=list(SAMPLE_FIELDS[:width]))
 
 
 def _clean(df: pd.DataFrame) -> pd.DataFrame:

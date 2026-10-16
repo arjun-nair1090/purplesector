@@ -5,6 +5,8 @@ import html
 import math
 import time
 
+import numpy as np
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from telemetry.connection import ConnectionState
@@ -89,6 +91,26 @@ CSS = f"""
 .ps-banner {{ padding:.5rem .8rem; border-radius:6px; border:1px solid var(--line); background:var(--panel);
              color:var(--muted); margin-bottom:.6rem; }}
 .ps-banner b {{ color:var(--text); }}
+.ps-gap {{ display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:.2rem .7rem;
+          padding:.45rem 0; border-bottom:1px solid var(--line); }}
+.ps-gap:last-of-type {{ border-bottom:0; }}
+.ps-gap .pos {{ font-size:1.05rem; font-weight:700; color:var(--muted); min-width:2.2rem; }}
+.ps-gap .who {{ font-size:1rem; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis;
+               white-space:nowrap; }}
+.ps-gap .who small {{ display:block; color:var(--muted); font-weight:400; font-size:.72rem; }}
+.ps-gap .gap {{ font-size:1.5rem; font-weight:700; font-variant-numeric:tabular-nums; text-align:right; }}
+.ps-gap .gap small {{ display:block; font-size:.72rem; font-weight:600; }}
+.ps-me {{ font-size:.82rem; color:var(--purple); font-weight:700; padding:.2rem 0; }}
+.ps-laps {{ width:100%; border-collapse:collapse; margin-top:.35rem; font-size:.82rem;
+           font-variant-numeric:tabular-nums; }}
+.ps-laps th {{ color:var(--muted); font-weight:500; text-align:right; padding:.1rem .3rem; }}
+.ps-laps td {{ text-align:right; padding:.12rem .3rem; border-top:1px solid var(--line); color:var(--text); }}
+.ps-laps th:first-child, .ps-laps td:first-child {{ text-align:left; }}
+.ps-window {{ display:flex; gap:4px; margin:.3rem 0 .1rem; }}
+.ps-window div {{ flex:1; padding:.3rem .45rem; border-radius:4px; background:#2A2F3A; }}
+.ps-window small {{ display:block; color:var(--muted); font-size:.68rem; }}
+.ps-window b {{ font-size:1.05rem; font-variant-numeric:tabular-nums; }}
+.ps-window .now {{ background:rgba(166,108,255,.22); outline:1px solid var(--purple); }}
 </style>
 """
 
@@ -318,6 +340,78 @@ def car_block(snap) -> str:
     return f'<div class="ps-panel"><div class="ps-tyres">{tyres}</div><div style="margin-top:.5rem">{rows_html}</div></div>'
 
 
+def _gap_row(g, label, ahead: bool) -> str:
+    if g is None:
+        return (f'<div class="ps-gap"><span class="pos">—</span><span class="who">{label}'
+                '<small>no car</small></span><span class="gap ps-idle">—</span></div>')
+    trend = ""
+    if g.change_per_lap_s is not None and abs(g.change_per_lap_s) >= 0.05:
+        # good for you: the car ahead's gap shrinking, the car behind's gap growing
+        good = (g.change_per_lap_s < 0) if ahead else (g.change_per_lap_s > 0)
+        word = "closing" if g.change_per_lap_s < 0 else "opening"
+        trend = (f'<small style="color:{GREEN if good else RED}">{word} '
+                 f'{abs(g.change_per_lap_s):.1f} s/lap</small>')
+    elif g.change_per_lap_s is not None:
+        trend = '<small style="color:var(--muted)">holding</small>'
+    gap = "—" if g.gap_s is None else f'{g.gap_s:.1f}<span class="ps-unit">s</span>'
+    return (f'<div class="ps-gap"><span class="pos">P{g.position}</span><span class="who">{esc(g.name)}'
+            f'<small>{label}</small></span><span class="gap{" ps-idle" if g.gap_s is None else ""}">{gap}{trend}'
+            '</span></div>')
+
+
+def gaps_block(view, snap) -> str:
+    """Race gaps panel. Gaps are measured from each car's own distance/time trace."""
+    head = '<div class="ps-panel top"><div class="ps-label">Race gaps</div>'
+    if not view["race"]:
+        return (head + '<div class="ps-meta">Gaps to the cars around you appear in race sessions. In practice '
+                'and qualifying, positions are by lap time, not by track position.</div></div>')
+    me = f'<div class="ps-me">P{snap.position} · you</div>' if snap.position else ""
+    return (head + _gap_row(view["ahead"], "ahead", True) + me + _gap_row(view["behind"], "behind", False)
+            + '<div class="ps-meta" style="margin-top:.35rem">Seconds since the car ahead passed your spot (and '
+            'you passed theirs). Trend: change over your last lap.</div></div>')
+
+
+def strategy_block(s) -> str:
+    """Fuel and tyre use measured per lap, the projection from it, and the game's pit window."""
+    burn, wear = s["fuel_per_lap_kg"], s["wear_per_lap_pct"]
+    margin = s["fuel_margin"]
+    margin_html = NA
+    if margin is not None:
+        color = RED if margin < 0 else (YELLOW if margin < 0.5 else GREEN)
+        margin_html = (f'<b style="color:{color}">{margin:+.1f}</b>'.replace("-", "−")
+                       + f'<span class="ps-unit">laps ({esc(s["fuel_source"])})</span>')
+    rows = [
+        ("Fuel per lap", val(burn, "{:.2f}", "kg") + (f' <span class="ps-meta">avg of {s["fuel_laps_measured"]}</span>'
+                                                       if burn is not None else "")),
+        ("Fuel left at that rate", val(s["fuel_laps_left"], "{:.1f}", "laps")),
+        ("Fuel margin at the flag", margin_html),
+        ("Most-worn tyre, per lap", val(wear, "{:.2f}", "%")),
+    ]
+    body = "".join(f'<div class="ps-row"><span class="ps-label">{k}</span><span>{v}</span></div>' for k, v in rows)
+    ideal, latest, lap = s["pit_ideal"], s["pit_latest"], s["lap_number"]
+    if ideal or latest:
+        in_window = bool(lap and ideal and latest and ideal <= lap <= latest)
+        pit = ('<div class="ps-window">'
+               f'<div class="{"now" if in_window else ""}"><small>Pit window (game)</small>'
+               f'<b>L{ideal or "?"}–{latest or "?"}</b></div>'
+               f'<div><small>Rejoin (game)</small><b>{"P" + str(s["pit_rejoin"]) if s["pit_rejoin"] else "—"}</b></div>'
+               "</div>")
+    else:
+        pit = '<div class="ps-meta">Pit window: n/a (the game sends it in races with a strategy)</div>'
+    table = ""
+    if s["laps"]:
+        table = ('<table class="ps-laps"><tr><th>Lap</th><th>Time</th><th>Fuel kg</th><th>Wear %</th></tr>'
+                 + "".join(f"<tr><td>{lap.lap_number}</td><td>{fmt_lap(lap.lap_time_ms)}</td>"
+                           f"<td>{'—' if lap.fuel_used_kg is None else f'{lap.fuel_used_kg:.2f}'}</td>"
+                           f"<td>{'—' if lap.tyre_wear_pct is None else f'{lap.tyre_wear_pct:.2f}'}</td></tr>"
+                           for lap in reversed(s["laps"]))
+                 + "</table>")
+    else:
+        table = ('<div class="ps-meta" style="margin-top:.3rem">Per-lap use is measured between line crossings, '
+                 'from your second lap on.</div>')
+    return f'<div class="ps-panel top"><div class="ps-label">Fuel and tyres</div>{body}{pit}{table}</div>'
+
+
 # ---------------- charts ----------------
 
 def history_series(rows, gap_s: float = 0.5):
@@ -365,6 +459,84 @@ def live_chart(cols, window_s: int):
     fig.update_yaxes(title_text="steer", range=[-1.05, 1.05], row=3, col=1)
     fig.update_xaxes(range=[-window_s, 0], row=3, col=1, title_text="seconds before now (game clock)")
     return _style(fig, 430)
+
+
+DOT_STYLE = {"player": (PURPLE, 15, "You"), "ahead": (GREEN, 11, "Car ahead"),
+             "behind": (RED, 11, "Car behind"), "other": (MUTED, 8, "Other cars")}
+
+
+def track_map_chart(m, dots=(), *, color=None, color_label=None, height=340):
+    """Outline (optionally coloured per point), detected corner labels, and live car dots."""
+    fig = go.Figure()
+    u, v = np.append(m.u, m.u[0]), np.append(m.v, m.v[0])
+    fig.add_scatter(x=u, y=v, mode="lines", line=dict(color="#3A404D", width=13), hoverinfo="skip", showlegend=False)
+    if color is None:
+        fig.add_scatter(x=u, y=v, mode="lines", line=dict(color="#5A6170", width=4), hoverinfo="skip",
+                        showlegend=False)
+    else:
+        lim = float(np.nanmax(np.abs(color))) or 1.0
+        fig.add_scatter(x=m.u, y=m.v, mode="markers", showlegend=False,
+                        marker=dict(size=6, color=color, cmin=-lim, cmax=lim,
+                                    colorscale=[[0, GREEN], [0.5, "#5A6170"], [1, RED]],
+                                    colorbar=dict(title=dict(text=color_label, side="top"), thickness=10, len=0.8)),
+                        customdata=m.distance_m, hovertemplate="%{customdata:.0f} m<br>%{marker.color:+.3f} s<extra></extra>")
+    sx, sy = m.point_at(float(m.distance_m[0]))
+    fig.add_scatter(x=[sx], y=[sy], mode="markers", marker=dict(symbol="line-ns", size=16, color=TEXT,
+                                                                 line=dict(width=3, color=TEXT)),
+                    hovertext="Start / finish", hoverinfo="text", showlegend=False)
+    if m.corners:
+        # badges just outside the line: offset along the outline's normal, away from the centre
+        span = max(float(np.ptp(m.u)), float(np.ptp(m.v)))
+        cu, cv = float(np.mean(m.u)), float(np.mean(m.v))
+        xs, ys = [], []
+        for c in m.corners:
+            (x0, y0), (x1, y1) = m.point_at(c.apex_m - 10), m.point_at(c.apex_m + 10)
+            px, py = m.point_at(c.apex_m)
+            nx, ny = y0 - y1, x1 - x0
+            norm = math.hypot(nx, ny) or 1.0
+            nx, ny = nx / norm, ny / norm
+            if (px - cu) * nx + (py - cv) * ny < 0:
+                nx, ny = -nx, -ny
+            xs.append(px + nx * span * 0.045)
+            ys.append(py + ny * span * 0.045)
+        fig.add_scatter(x=xs, y=ys, mode="markers+text", text=[str(c.number) for c in m.corners],
+                        textfont=dict(color=TEXT, size=11), textposition="middle center",
+                        marker=dict(size=19, color="#2A2F3A", line=dict(width=1, color=LINE)),
+                        hovertext=[f"{c.name}: {c.min_speed_kph:.0f} km/h at {c.apex_m:.0f} m" for c in m.corners],
+                        hoverinfo="text", showlegend=False)
+    for role in ("other", "behind", "ahead", "player"):
+        pts = [(x, y) for x, y, r in dots if r == role]
+        if pts:
+            c, size, name = DOT_STYLE[role]
+            fig.add_scatter(x=[p[0] for p in pts], y=[p[1] for p in pts], mode="markers", name=name,
+                            marker=dict(size=size, color=c, line=dict(width=2, color=BG)), hoverinfo="name")
+    fig.update_xaxes(visible=False)
+    fig.update_yaxes(visible=False, scaleanchor="x", scaleratio=1)
+    fig.update_layout(height=height, margin=dict(l=4, r=4, t=4, b=4), paper_bgcolor=PANEL, plot_bgcolor=PANEL,
+                      font=dict(family=FONT, color=TEXT, size=12), showlegend=bool(dots),
+                      legend=dict(orientation="h", y=0, x=0, bgcolor="rgba(0,0,0,0)"), hovermode="closest")
+    return fig
+
+
+def progress_chart(df):
+    """Best valid lap per session over time on one track."""
+    fig = go.Figure()
+    secs = df["best_lap_ms"] / 1000
+    when = df["started_at"].str.replace("T", " ")
+    best_so_far = secs.cummin()
+    fig.add_scatter(x=when, y=best_so_far, mode="lines", line=dict(color=PURPLE, width=2, shape="hv"),
+                    name="Personal best so far", hoverinfo="skip")
+    fig.add_scatter(x=when, y=secs, mode="markers+lines", line=dict(color=MUTED, width=1, dash="dot"),
+                    marker=dict(size=9, color=[PURPLE if s <= b else TEXT for s, b in zip(secs, best_so_far, strict=True)]),
+                    name="Session best", customdata=[fmt_lap(v) for v in df["best_lap_ms"]],
+                    hovertemplate="%{x}<br>%{customdata}<extra></extra>")
+    lo, hi = float(secs.min()), float(secs.max())
+    pad = max((hi - lo) * 0.15, 0.25)
+    ticks = np.linspace(lo - pad, hi + pad, 5)
+    fig.update_yaxes(title_text="best valid lap", range=[hi + pad, lo - pad],  # faster = higher
+                     tickvals=ticks, ticktext=[fmt_lap(t * 1000) for t in ticks])
+    fig.update_xaxes(type="category", title_text="session")
+    return _style(fig, 340)
 
 
 def comparison_chart(frame, lap_label, ref_label):

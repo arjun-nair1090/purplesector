@@ -108,6 +108,28 @@ class PacketHeader:
 
 
 @dataclass(slots=True, frozen=True)
+class CarMotionData:
+    """Per-car motion record. The spec does not say which world axis is vertical; the track map picks
+    the two axes with the largest spread instead of assuming one."""
+    world_position_x: float = _f("f")     # metres
+    world_position_y: float = _f("f")
+    world_position_z: float = _f("f")
+    world_velocity: tuple = _f("f", 3)
+    world_forward_dir: tuple = _f("h", 3)  # normalised * 32767
+    world_right_dir: tuple = _f("h", 3)
+    g_force_lateral: float = _f("f")
+    g_force_longitudinal: float = _f("f")
+    g_force_vertical: float = _f("f")
+    yaw: float = _f("f")                  # radians
+    pitch: float = _f("f")
+    roll: float = _f("f")
+
+    @property
+    def position(self) -> tuple:
+        return self.world_position_x, self.world_position_y, self.world_position_z
+
+
+@dataclass(slots=True, frozen=True)
 class CarTelemetryData:
     speed: int = _f("H")                  # km/h
     throttle: float = _f("f")             # 0.0 .. 1.0
@@ -181,11 +203,18 @@ class SessionData:
     spectator_car_index: int = _f("B")
     sli_pro_native_support: int = _f("B")
     num_marshal_zones: int = _f("B")
-    safety_car_status: int = 0            # decoded separately (after 21 marshal zones)
+    # decoded separately, from fixed offsets further into the packet
+    safety_car_status: int = 0
+    pit_window_ideal_lap: int = 0         # game's strategy for the player; 0 = not provided
+    pit_window_latest_lap: int = 0
+    pit_rejoin_position: int = 0
 
 
 # Byte offset of m_safetyCarStatus from the packet start: header + 19 fixed bytes + 21*5 marshal zones.
 SESSION_SAFETY_CAR_OFFSET = 24 + 19 + 21 * 5
+# m_pitStopWindowIdealLap: after safety car, network game, forecast count, 56*8 forecast samples,
+# forecast accuracy, AI difficulty and three uint32 link identifiers. Followed by latest lap, rejoin position.
+SESSION_PIT_WINDOW_OFFSET = SESSION_SAFETY_CAR_OFFSET + 3 + 56 * 8 + 2 + 12  # 613
 
 
 @dataclass(slots=True, frozen=True)
@@ -292,6 +321,16 @@ class FlashbackDetails:
 
 
 @dataclass(slots=True, frozen=True)
+class ButtonDetails:
+    button_status: int = _f("I")          # bit flags of the buttons held; see udp_action_bit()
+
+
+def udp_action_bit(n: int) -> int:
+    """Bit for the game's assignable "UDP Action n" button (1..12): 0x00100000 .. 0x80000000."""
+    return 0x0010_0000 << (n - 1)
+
+
+@dataclass(slots=True, frozen=True)
 class EventData:
     code: str                             # 4-char event string code, e.g. "SSTA"
     details: object = None
@@ -303,10 +342,13 @@ SESSION_HISTORY_LAPS_OFFSET = 24 + 7
 
 @dataclass(slots=True, frozen=True)
 class Packet:
-    """A validated, decoded packet. `data` holds the player-car record (or event/history)."""
+    """A validated, decoded packet. `data` holds the player-car record (or event/history).
+    For lap data, motion and participants, `cars` holds all 22 records (index = car index)."""
     header: PacketHeader
     packet_id: PacketId
     data: object
+    cars: tuple | None = None
+    num_active_cars: int | None = None    # participants packet only
 
 
 # ---- Lookup tables (F1 22 appendices) ----
@@ -332,6 +374,7 @@ ACTUAL_COMPOUNDS = {
 }
 VISUAL_COMPOUNDS = {16: "Soft", 17: "Medium", 18: "Hard", 7: "Inter", 8: "Wet",
                     15: "Wet", 19: "Super soft", 20: "Soft", 21: "Medium", 22: "Hard"}
+RESULT_ACTIVE = 2  # lap data m_resultStatus: 0 invalid, 1 inactive, 2 active, 3 finished, 4+ out
 PIT_STATUS = {0: "On track", 1: "Pitting", 2: "In pit area"}
 DRIVER_STATUS = {0: "In garage", 1: "Flying lap", 2: "In lap", 3: "Out lap", 4: "On track"}
 SAFETY_CAR = {0: "None", 1: "Safety car", 2: "Virtual safety car", 3: "Formation lap"}

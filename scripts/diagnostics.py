@@ -110,8 +110,9 @@ def send(settings, seconds: float) -> int:
                 raw = pb.build_session(p.header, p.data)
             elif p.packet_id == PacketId.EVENT:
                 raw = pb.build_event(p.header, p.data.code)
-            elif p.packet_id == PacketId.PARTICIPANTS:
-                raw = pb.build_packet(p.header, p.data, prefix=b"\x01")
+            elif p.cars is not None:  # lap data, motion, participants: every car, as the game sends them
+                prefix = bytes([p.num_active_cars or 0]) if p.packet_id == PacketId.PARTICIPANTS else b""
+                raw = pb.build_cars(p.header, dict(enumerate(p.cars)), prefix=prefix)
             else:
                 raw = pb.build_packet(p.header, p.data)
             sock.sendto(raw, target)

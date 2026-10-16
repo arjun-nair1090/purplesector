@@ -1,17 +1,21 @@
 """Session analysis: compare any recorded lap with a reference lap on the same track."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from analysis.lap_comparison import compare_laps
 from analysis.statistics import lap_input_stats
+from analysis.track_map import TrackMap, corners_in
 from service import get_service
 from ui import components as c
 
 
 def _session_label(row) -> str:
     src = "Demo" if row.source == "demo" else "Live"
+    if row.imported:
+        src = f"Imported ({row.driver_name or 'other driver'})"
     best = c.fmt_lap(row.best_lap_ms) if pd.notna(row.best_lap_ms) else "no valid lap"
     return f"#{row.id} {row.started_at.replace('T', ' ')} — {src}, {row.track_name or 'unknown track'}, " \
            f"{row.laps} laps, best {best}"
@@ -64,11 +68,13 @@ def render() -> None:
     ref_id = right.selectbox(
         "Reference lap", ref_ids, index=0,
         format_func=lambda i: (lambda r: f"{c.fmt_lap(r.lap_time_ms)} — lap {r.lap_number}, session #{r.session_id}"
+                               + (f", {r.driver_name or 'imported'}" if r.imported else "")
                                + (" (fastest)" if i == ref_ids[0] else ""))(ref_rows[i]),
-        help="Valid, fully recorded laps on this track, fastest first")
+        help="Valid, fully recorded laps on this track, fastest first, including imported laps from other drivers")
     lap, ref = lap_rows[lap_id], ref_rows[ref_id]
+    lap_df, ref_df = repo.lap_samples(lap_id), repo.lap_samples(ref_id)
     with st.spinner("Aligning laps…"):
-        cmp = compare_laps(repo.lap_samples(lap_id), repo.lap_samples(ref_id), lap_time_ms=int(lap.lap_time_ms),
+        cmp = compare_laps(lap_df, ref_df, lap_time_ms=int(lap.lap_time_ms),
                            ref_time_ms=int(ref.lap_time_ms),
                            lap_sectors=(lap.sector1_ms, lap.sector2_ms, lap.sector3_ms),
                            ref_sectors=(ref.sector1_ms, ref.sector2_ms, ref.sector3_ms))
@@ -88,17 +94,43 @@ def render() -> None:
     if cmp.frame is not None:
         st.plotly_chart(c.comparison_chart(cmp.frame, f"Lap {lap.lap_number}", f"Reference (lap {ref.lap_number})"),
                         config={"displayModeBar": False, "responsive": True})
+    track_map = TrackMap.from_samples(ref_df) or TrackMap.from_samples(lap_df)
+    corners = track_map.corners if track_map else []
+    if cmp.conclusive and track_map is not None:
+        _delta_map(track_map, cmp.frame)
     if cmp.conclusive:
         st.subheader("Segments to review")
         st.caption("Time difference per 200 m segment (measured). Observed differences describe what was "
-                   "different in that segment; they are correlations, not proven causes.")
-        rows = [{"Segment": f"{s.start_m:.0f}–{s.end_m:.0f} m", "Time vs ref (s)": round(s.time_delta_s, 3),
+                   "different in that segment; they are correlations, not proven causes. Corner numbers are "
+                   "detected from the reference lap's speed trace.")
+        rows = [{"Segment": f"{s.start_m:.0f}–{s.end_m:.0f} m", "Corner": corners_in(corners, s.start_m, s.end_m) or "—",
+                 "Time vs ref (s)": round(s.time_delta_s, 3),
                  "Observed differences": "; ".join(s.observations()) or "No notable input difference"}
                 for s in cmp.segments[:5] if s.time_delta_s > 0.02]
         if rows:
             st.dataframe(pd.DataFrame(rows), hide_index=True)
         else:
             st.success("No segment lost more than 0.02 s to the reference.")
+
+
+def _delta_map(track_map, frame) -> None:
+    """Where on the circuit time was gained or lost: the running delta's slope, per point of the outline."""
+    d = frame["distance_m"].to_numpy(float)
+    rate = np.gradient(frame["delta_s"].to_numpy(float), d) * 100  # seconds per 100 m
+    rate = np.convolve(np.nan_to_num(rate), np.ones(9) / 9, mode="same")  # 45 m smoothing
+    per_point = np.interp(track_map.distance_m, d, rate, left=np.nan, right=np.nan)
+    st.subheader("Where the time went")
+    left, right = st.columns([1.4, 1])
+    with left:
+        st.plotly_chart(c.track_map_chart(track_map, color=per_point, color_label="s / 100 m", height=420),
+                        config={"displayModeBar": False, "responsive": True})
+    right.caption("Green: gaining on the reference. Red: losing to it. Colour is the slope of the running delta "
+                  "(seconds per 100 m), from distance-aligned telemetry. Numbered badges are detected corners.")
+    if track_map.corners:
+        right.dataframe(pd.DataFrame({"Corner": [k.number for k in track_map.corners],
+                                      "At (m)": [round(k.apex_m) for k in track_map.corners],
+                                      "Ref minimum (km/h)": [round(k.min_speed_kph) for k in track_map.corners]}),
+                        hide_index=True, height=min(35 * (len(track_map.corners) + 1) + 3, 360))
 
 
 def _laps_table(laps: pd.DataFrame) -> pd.DataFrame:

@@ -17,10 +17,14 @@ import threading
 import uuid
 from dataclasses import asdict
 
-from analysis.coach import Category, Coach, CoachConfig, Priority
-from analysis.lap_comparison import delta_at, reference_curve
+import overlay
+from analysis.coach import Category, Coach, CoachConfig, Priority, radio_report
+from analysis.gaps import RACE_SESSIONS, GapTracker
+from analysis.lap_comparison import delta_at, reference_curve, samples_frame
 from analysis.lap_tracker import LapEventKind, LapTracker
 from analysis.statistics import SessionStats, consistency_s, theoretical_best_ms
+from analysis.strategy import LapResources, projection
+from analysis.track_map import TrackMap
 from config.settings import Settings, load_settings, save_settings, setup_logging
 from demo.simulator import LOOPBACK_TRACK_NAME, DemoRunner, is_synthetic_uid
 from demo.simulator import TRACK_NAME as DEMO_TRACK_NAME
@@ -28,7 +32,7 @@ from storage.database import init_db
 from storage.session_repository import SessionRepository
 from storage.telemetry_writer import TelemetryWriter
 from telemetry.connection import ConnectionMonitor, ConnectionState
-from telemetry.packet_models import EVENT_CODES, PIT_STATUS, Packet, PacketId
+from telemetry.packet_models import EVENT_CODES, PIT_STATUS, RESULT_ACTIVE, Packet, PacketId, udp_action_bit
 from telemetry.receiver import UdpReceiver
 from telemetry.state import TelemetryState
 from voice.speaker import VoiceCoach, default_engine_factory
@@ -47,6 +51,8 @@ class AppService:
         self.state = TelemetryState(settings.history_window_s)
         self.tracker = LapTracker()
         self.stats = SessionStats()
+        self.gaps = GapTracker()
+        self.resources = LapResources()
         self.coach = Coach(CoachConfig.from_settings(settings))
         self.voice = VoiceCoach(engine_factory=engine_factory, enabled=settings.voice_enabled,
                                 rate=settings.voice_rate, volume=settings.voice_volume,
@@ -57,7 +63,10 @@ class AppService:
         self.mode = settings.mode
         self.session_uid: int | None = None
         self.loopback_test = False  # synthetic packets over real UDP
+        self.overlay_server = None
+        self._radio_n = 0
         self._reset_pace()
+        self._reset_race()
         self.recording_key: str | None = None
         self._recorded_meta: dict = {}
         self._last_frames: dict[int, int] = {}
@@ -77,6 +86,7 @@ class AppService:
     def start(self) -> None:
         self.voice.start()
         self.writer.start()
+        self._start_overlay()
         self._start_source()
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
 
@@ -86,7 +96,17 @@ class AppService:
         self._end_recording()
         self.writer.stop()
         self.voice.stop()
+        self._stop_overlay()
         log.info("PurpleSector shut down cleanly")
+
+    def _start_overlay(self) -> None:
+        self.overlay_server = overlay.serve(self.settings.overlay_port, self.overlay_view)
+
+    def _stop_overlay(self) -> None:
+        if self.overlay_server:
+            self.overlay_server.shutdown()
+            self.overlay_server.server_close()
+            self.overlay_server = None
 
     def _start_source(self) -> None:
         self.monitor.reset(self.mode)
@@ -151,6 +171,10 @@ class AppService:
                 return  # history packets rotate through all cars
             self._guard("state", self.state.apply, packet)
             if pid == PacketId.LAP_DATA:
+                self._player_idx = h.player_car_index
+                if packet.cars:
+                    self._lap_cars = packet.cars
+                    self._guard("gaps", self.gaps.on_lap_data, h.session_time, packet.cars)
                 events = self._guard("lap tracker", self.tracker.on_lap_data, packet.data) or []
                 for ev in events:
                     self._guard("lap event", self._on_lap_event, ev)
@@ -159,6 +183,13 @@ class AppService:
                 d = packet.data
                 self._guard("lap tracker", self.tracker.on_telemetry, h.session_time, d)
                 self._guard("stats", self.stats.add, d.speed, d.throttle * 100, d.brake * 100)
+            elif pid == PacketId.MOTION:
+                self.tracker.on_motion(packet.data)
+                if packet.cars:
+                    self._car_positions = tuple(c.position for c in packet.cars)
+            elif pid == PacketId.PARTICIPANTS:
+                if packet.cars:
+                    self._guard("gaps", self.gaps.set_names, packet.cars)
             elif pid == PacketId.SESSION:
                 self._guard("recorder", self._update_recording_meta)
                 self._guard("pace", self._ensure_alltime, self.state.snapshot().track_name)
@@ -184,6 +215,7 @@ class AppService:
         self.coach.reset()
         self._last_frames.clear()
         self._reset_pace()
+        self._reset_race()
         if session_uid is not None:
             self._begin_recording(session_uid)
             if self.mode == "demo":
@@ -198,6 +230,24 @@ class AppService:
         self.delta_ref: str | None = None
         self.delta_s: float | None = None
         self._pace_track: str | None = None
+
+    def _reset_race(self) -> None:
+        self.gaps.reset()
+        self.resources.reset()
+        self.track_map: TrackMap | None = None
+        self.track_map_source: str | None = None
+        self._player_idx = 0
+        self._lap_cars = None
+        self._car_positions = None
+        self._buttons = 0
+
+    def _set_track_map(self, df, source: str) -> None:
+        """First lap with positions this session draws the map; kept for the session so corner numbers
+        stay the same in every message."""
+        if self.track_map is None:
+            m = TrackMap.from_samples(df)
+            if m is not None:
+                self.track_map, self.track_map_source = m, source
 
     def _ensure_alltime(self, track: str | None) -> None:
         """Load the recorded best for this track once per session, off the packet thread."""
@@ -224,6 +274,8 @@ class AppService:
             self._history_best_ms = best
             self._alltime_curve = curve
             self._pick_reference()
+            if ref is not None:
+                self._guard("track map", self._set_track_map, ref[1], "your recorded best lap")
 
     def _pick_reference(self) -> None:
         """Delta reference = the faster of the recorded PB and this session's best (both fully recorded).
@@ -236,6 +288,8 @@ class AppService:
             self._ref_curve = self.delta_ref = None
 
     def _update_pace(self, lap) -> None:
+        if lap.samples_complete and self.track_map is None:
+            self._set_track_map(samples_frame(lap.samples), f"lap {lap.lap_number}")
         if lap is self.tracker.best_lap() and lap.samples_complete:
             c = reference_curve(lap.samples)
             if c is not None:
@@ -258,10 +312,13 @@ class AppService:
     def _on_lap_event(self, ev) -> None:
         k = ev.kind
         if k == LapEventKind.LAP_COMPLETED:
+            snap = self.state.snapshot()
+            ev.lap.fuel_used_kg, ev.lap.tyre_wear_pct = self.resources.line_crossed(snap.fuel_kg, snap.tyre_wear_pct)
+            self._guard("gaps", self.gaps.on_player_lap, self._player_idx)
             if self.recording_key:
                 self.writer.save_lap(self.recording_key, ev.lap)
-            self._speak(self.coach.on_lap_completed(ev.lap, self.tracker, self._history_best_ms,
-                                                    self.state.snapshot().track_name))
+            self._speak(self.coach.on_lap_completed(ev.lap, self.tracker, self._history_best_ms, snap.track_name,
+                                                    self.track_map.corners if self.track_map else None))
             self._update_pace(ev.lap)
         elif k == LapEventKind.LAP_INVALIDATED:
             self._speak(self.coach.simple(f"invalid:{ev.lap_number}", Category.LAP_PERFORMANCE,
@@ -274,6 +331,13 @@ class AppService:
                                           f"Game pit status ({PIT_STATUS[1] if entry else PIT_STATUS[0]})"))
 
     def _on_game_event(self, ev) -> None:
+        if ev.code == "BUTN" and ev.details is not None:
+            held = ev.details.button_status
+            n = self.settings.radio_button
+            if n and held & udp_action_bit(n) and not self._buttons & udp_action_bit(n):
+                self.radio_check()  # on press, not while held
+            self._buttons = held
+            return
         if ev.code in ("SSTA", "SEND", "CHQF"):
             text = EVENT_CODES[ev.code]
             self._speak(self.coach.simple(f"event:{ev.code}", Category.SESSION, text, Priority.LOW,
@@ -319,7 +383,8 @@ class AppService:
         if not self.recording_key:
             return
         snap = self.state.snapshot()
-        meta = {"session_type": snap.session_type, "track_id": snap.track_id, "track_name": snap.track_name}
+        meta = {"session_type": snap.session_type, "track_id": snap.track_id, "track_name": snap.track_name,
+                "driver_name": snap.player_name}
         if meta != self._recorded_meta:
             self._recorded_meta = meta
             self.writer.update_session(self.recording_key, **meta)
@@ -359,6 +424,9 @@ class AppService:
                 self.state.set_history_window(new.history_window_s)
             if self.demo and (new.demo_speed != old.demo_speed):
                 self.demo.speed = new.demo_speed
+            if new.overlay_port != old.overlay_port:
+                self._stop_overlay()
+                self._start_overlay()
             mode_changed = new.mode != old.mode
             if new.data_dir != old.data_dir:
                 self._stop_source()
@@ -396,6 +464,79 @@ class AppService:
     def coach_events(self) -> list:
         with self._lock:
             return list(self.coach.events)
+
+    # ---------------- race: gaps, strategy, map, radio, overlay ----------------
+    def gaps_view(self) -> dict:
+        """Cars directly ahead/behind by race position. Positions in practice and qualifying are by lap
+        time, not track position, so gaps are only reported in races."""
+        with self._lock:
+            race = self.state.snapshot().session_type in RACE_SESSIONS
+            view = self.gaps.view(self._player_idx) if race else {"ahead": None, "behind": None}
+            return {"race": race, **view}
+
+    def strategy_view(self) -> dict:
+        with self._lock:
+            laps = list(self.tracker.laps)
+            snap = self.state.snapshot()
+            p = projection(laps, snap)
+            fuel_margin, fuel_source = p["fuel_margin_laps"], "measured"
+            if fuel_margin is None and snap.fuel_laps_remaining is not None:
+                fuel_margin, fuel_source = snap.fuel_laps_remaining, "game estimate"
+            return {**p, "fuel_margin": fuel_margin, "fuel_source": fuel_source if fuel_margin is not None else None,
+                    "laps": [lap for lap in laps if lap.fuel_used_kg is not None or lap.tyre_wear_pct is not None][-5:],
+                    "pit_ideal": snap.pit_window_ideal_lap, "pit_latest": snap.pit_window_latest_lap,
+                    "pit_rejoin": snap.pit_rejoin_position, "lap_number": snap.lap_number}
+
+    def map_view(self) -> dict:
+        """Outline plus live dots: (u, v, role) for every active car, role in player/ahead/behind/other."""
+        with self._lock:
+            m, positions, cars = self.track_map, self._car_positions, self._lap_cars
+            dots = []
+            if m is not None and positions is not None:
+                g = self.gaps_view()
+                ahead = g["ahead"].car_index if g["ahead"] else None
+                behind = g["behind"].car_index if g["behind"] else None
+                for i, pos in enumerate(positions):
+                    active = cars[i].result_status == RESULT_ACTIVE if cars else i == self._player_idx
+                    if not active:
+                        continue
+                    role = ("player" if i == self._player_idx else "ahead" if i == ahead
+                            else "behind" if i == behind else "other")
+                    dots.append((*m.project(pos), role))
+            return {"map": m, "source": self.track_map_source, "dots": dots}
+
+    def _radio_facts(self) -> dict:
+        snap = self.state.snapshot()
+        s = self.strategy_view()
+        return {"delta_s": self.delta_s, "delta_ref": self.delta_ref, "gaps": self.gaps_view(),
+                "fuel_margin_laps": s["fuel_margin"], "fuel_margin_source": s["fuel_source"],
+                "last_lap_ms": snap.last_lap_ms}
+
+    def radio_check(self) -> bool:
+        """Status call on request (wheel button or the sidebar). Returns whether it was queued."""
+        with self._lock:
+            self._radio_n += 1
+            e = radio_report(self._radio_n, **self._radio_facts())
+            if self.coach.accept(e):
+                self._speak([e])
+                return True
+            return False
+
+    def overlay_view(self) -> dict:
+        with self._lock:
+            snap = self.state.snapshot()
+            g, s = self.gaps_view(), self.strategy_view()
+            last = self.coach.events[-1].message if self.coach.events else None
+
+            def gap(c):
+                return None if c is None else {"name": c.name, "position": c.position, "gap_s": c.gap_s,
+                                               "change_per_lap_s": c.change_per_lap_s}
+            gear = snap.gear
+            return {"source": snap.source, "delta_s": self.delta_s, "delta_ref": self.delta_ref,
+                    "gear": None if gear is None else {-1: "R", 0: "N"}.get(gear, str(gear)),
+                    "speed_kph": snap.speed_kph, "lap": snap.lap_number, "position": snap.position,
+                    "ahead": gap(g["ahead"]), "behind": gap(g["behind"]),
+                    "fuel_margin_laps": s["fuel_margin"], "fuel_source": s["fuel_source"], "last_call": last}
 
 
 _service: AppService | None = None

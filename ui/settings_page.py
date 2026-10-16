@@ -55,6 +55,14 @@ def render() -> None:
         conf = g.selectbox("Minimum confidence", CONFIDENCE, index=CONFIDENCE.index(s.coach_min_confidence),
                            format_func=str.capitalize,
                            help="Messages below this evidence level are neither shown nor spoken")
+        a, b = st.columns(2)
+        radio = a.selectbox("Radio on request: wheel button", list(range(13)), index=s.radio_button,
+                            format_func=lambda n: "Off" if n == 0 else f"UDP Action {n}",
+                            help="In F1 22, assign a button to this UDP Action under Controls. Pressing it makes "
+                                 "the engineer read out your delta, gaps and fuel. The sidebar's Radio check does "
+                                 "the same.")
+        overlay_port = b.number_input("Overlay port (this PC only)", 1024, 65535, s.overlay_port, step=1,
+                                      help="Local endpoint the always-on-top overlay reads. Bound to 127.0.0.1.")
         with st.expander("Coaching thresholds"):
             a, b, f = st.columns(3)
             sector = a.number_input("Sector loss to report (s)", 0.01, 10.0, float(s.sector_loss_threshold_s), 0.05)
@@ -86,7 +94,7 @@ def render() -> None:
                    coach_min_confidence=conf, coach_cooldown_s=cooldown, sector_loss_threshold_s=sector,
                    segment_loss_threshold_s=segment, brake_abrupt_ratio=brake, history_window_s=window,
                    ui_refresh_ms=refresh, recording_enabled=rec, record_demo=rec_demo, demo_scenario=scenario,
-                   demo_speed=speed, data_dir=data_dir.strip())
+                   demo_speed=speed, data_dir=data_dir.strip(), radio_button=radio, overlay_port=overlay_port)
         candidate, errors = build_settings(raw)
         if errors:
             for name, msg in errors.items():
@@ -118,7 +126,8 @@ LABELS = {
     "sector_loss_threshold_s": "Sector loss to report", "segment_loss_threshold_s": "Segment loss to report",
     "brake_abrupt_ratio": "Abrupt-brake ratio", "history_window_s": "Trace history",
     "ui_refresh_ms": "Readout refresh", "demo_speed": "Demo speed", "demo_scenario": "Demo scenario",
-    "data_dir": "Data directory", "settings_file": "Settings file",
+    "data_dir": "Data directory", "settings_file": "Settings file", "radio_button": "Radio wheel button",
+    "overlay_port": "Overlay port",
 }
 
 

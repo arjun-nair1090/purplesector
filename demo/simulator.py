@@ -5,6 +5,9 @@ is built with braking/acceleration limits; throttle, brake, steering, gear and R
 derived from it, so the signals change coherently. Each lap applies small, seeded
 driver variations (corner speeds, braking strength), so laps differ repeatably.
 
+The demo is a 30-lap race against three fictional AI cars running the unvaried
+profile at fixed pace factors, so race gaps, the track map and positions have data.
+
 The simulator emits the same decoded Packet objects as the UDP decoder, so demo data
 flows through exactly the same state/analysis path. Packets are tagged "demo" by the
 service and never mixed with live data.
@@ -19,7 +22,9 @@ from collections.abc import Callable
 import numpy as np
 
 from telemetry.packet_models import (
+    MAX_CARS,
     CarDamageData,
+    CarMotionData,
     CarStatusData,
     CarTelemetryData,
     EventData,
@@ -52,6 +57,48 @@ DECEL = 38.0           # m/s^2 at full brake
 TOP_SPEED_MS = 94.0
 SCENARIOS = ("standard", "quick_lap", "interruption")
 INTERRUPT_AT_S, INTERRUPT_FOR_S = 25.0, 6.0
+RACE_LAPS = 30
+# heading change per corner (degrees, + = right), solved offline so the loop closes without crossing itself
+TURN_DEG = (135.3, -20.4, 79.5, -73.1, 161.2, -40.2, 125.7, -8.0)
+# fictional AI cars: (name, race number, start offset from the player in metres, pace factor)
+RIVALS = (("M. DUVAL", 7, 250.0, 1.003), ("T. OKAFOR", 21, 60.0, 0.99), ("L. BRANDT", 33, -60.0, 0.988))
+PIT_WINDOW = (14, 19, 4)  # ideal lap, latest lap, rejoin position (synthetic)
+
+
+def track_geometry() -> np.ndarray:
+    """Per-metre (x, y, z) world positions of the Demo Ring; y is a gentle synthetic elevation."""
+    heading, turns, h = 0.0, iter(TURN_DEG), []
+    for length, apex, _ in LAYOUT:
+        if apex is None:
+            h += [heading] * length
+            continue
+        w = np.sin(np.linspace(0, np.pi, length))
+        for step in np.radians(next(turns)) * w / w.sum():
+            heading += step
+            h.append(heading)
+    h = np.array(h)
+    x, z = np.cumsum(np.cos(h)), np.cumsum(np.sin(h))
+    s = np.arange(TRACK_LENGTH) / TRACK_LENGTH
+    x, z = x - x[-1] * s, z - z[-1] * s  # spread the few metres of closure error over the lap
+    y = 6 * np.sin(2 * np.pi * s)
+    return np.stack([x - x.mean(), y, z - z.mean()], 1)
+
+
+GEOMETRY = track_geometry()
+
+
+def position_at(d: float) -> tuple[float, float, float]:
+    x, y, z = GEOMETRY[int(d) % TRACK_LENGTH]
+    return float(x), float(y), float(z)
+
+
+class _Rival:
+    def __init__(self, offset_m: float, pace: float):
+        self.total = offset_m
+        self.pace = pace
+
+    def step(self, v_prof) -> None:
+        self.total += float(v_prof[int(self.total) % TRACK_LENGTH]) * self.pace * DT
 
 
 def _accel(v):
@@ -100,6 +147,9 @@ class DemoSimulator:
             raise ValueError(f"unknown scenario {scenario}")
         self.scenario = scenario
         self.session_uid = DEMO_UID_BASE + run_index
+        self._start_race()
+
+    def _start_race(self) -> None:
         self.t = 0.0
         self.frame = 0
         self.lap = 1
@@ -108,11 +158,12 @@ class DemoSimulator:
         self.last_lap_ms = 0
         self.s1 = self.s2 = 0
         self.invalid = False
-        self.fuel = 40.0
+        self.fuel = 53.0
         self.wear = 0.0
         self._profile = build_profile(self._seed())
+        self._rival_profile = build_profile(None)[0]
         self._pending_start = True
-        if scenario == "quick_lap":
+        if self.scenario == "quick_lap":
             # begin at 85% of lap 1 so a lap completes within ~15 s
             v = self._profile[0]
             start = int(TRACK_LENGTH * 0.85)
@@ -120,6 +171,11 @@ class DemoSimulator:
             self.lap_ms = float(np.sum(1.0 / v[:start]) * 1000)
             self.s1, self.s2 = int(np.sum(1 / v[:TRACK_LENGTH // 3]) * 1000), int(
                 np.sum(1 / v[TRACK_LENGTH // 3:2 * TRACK_LENGTH // 3]) * 1000)
+        self.rivals = [_Rival(self.d + off, pace) for _, _, off, pace in RIVALS]
+
+    @property
+    def total_distance(self) -> float:
+        return (self.lap - 1) * TRACK_LENGTH + self.d
 
     def _seed(self) -> int:
         return 1000 + self.lap
@@ -146,6 +202,12 @@ class DemoSimulator:
             self.s1 = int(self.lap_ms)
         if self.s1 and not self.s2 and self.d >= 2 * TRACK_LENGTH / 3:
             self.s2 = int(self.lap_ms) - self.s1
+        if self.lap > RACE_LAPS:  # chequered flag: end the session and start the next race, as the game would
+            finished = [Packet(self._hdr(PacketId.EVENT), PacketId.EVENT, EventData(code)) for code in ("CHQF", "SEND")]
+            self.session_uid += 0x1_0000  # stays in the synthetic range
+            self.scenario = "standard" if self.scenario == "quick_lap" else self.scenario
+            self._start_race()
+            return finished
         if self.lap % 4 == 0 and self.d > 0.6 * TRACK_LENGTH:
             self.invalid = True  # scripted track-limits infringement every 4th lap
         if self.d >= TRACK_LENGTH:
@@ -158,24 +220,38 @@ class DemoSimulator:
             self.invalid = False
             self._profile = build_profile(self._seed())
         self.fuel = max(0.0, self.fuel - v * DT * 0.0004)
-        self.wear += v * DT * 0.00002
+        self.wear += v * DT * 0.00035
+        for r in self.rivals:
+            r.step(self._rival_profile)
 
         if self.interrupted:
             return []
         out = []
         if self._pending_start:
-            self._pending_start = False
             out.append(Packet(self._hdr(PacketId.EVENT), PacketId.EVENT, EventData("SSTA")))
-            out.append(Packet(self._hdr(PacketId.PARTICIPANTS), PacketId.PARTICIPANTS,
-                              ParticipantData(name=b"DEMO DRIVER", race_number=99)))
+        if self._pending_start or self.frame % 300 == 1:  # the game repeats participants every 5 s
+            self._pending_start = False
+            people = [ParticipantData(name=b"DEMO DRIVER", race_number=99)] + [
+                ParticipantData(ai_controlled=1, name=name.encode(), race_number=num) for name, num, _, _ in RIVALS]
+            people += [ParticipantData()] * (MAX_CARS - len(people))
+            out.append(Packet(self._hdr(PacketId.PARTICIPANTS), PacketId.PARTICIPANTS, people[0], tuple(people),
+                              len(RIVALS) + 1))
         out.append(Packet(self._hdr(PacketId.CAR_TELEMETRY), PacketId.CAR_TELEMETRY, self._telemetry(i, v)))
-        out.append(Packet(self._hdr(PacketId.LAP_DATA), PacketId.LAP_DATA, self._lap_data()))
+        motion = [CarMotionData(*position_at(self.d))] + [CarMotionData(*position_at(r.total)) for r in self.rivals]
+        motion += [CarMotionData()] * (MAX_CARS - len(motion))
+        out.append(Packet(self._hdr(PacketId.MOTION), PacketId.MOTION, motion[0], tuple(motion)))
+        cars = self._all_lap_data()
+        out.append(Packet(self._hdr(PacketId.LAP_DATA), PacketId.LAP_DATA, cars[0], cars))
         if self.frame % 30 == 1:
+            ideal, latest, rejoin = PIT_WINDOW
             out.append(Packet(self._hdr(PacketId.SESSION), PacketId.SESSION, SessionData(
-                weather=1, track_temperature=31, air_temperature=24, total_laps=0, track_length=TRACK_LENGTH,
-                session_type=1, track_id=-1)))
+                weather=1, track_temperature=31, air_temperature=24, total_laps=RACE_LAPS, track_length=TRACK_LENGTH,
+                session_type=10, track_id=-1, pit_window_ideal_lap=ideal, pit_window_latest_lap=latest,
+                pit_rejoin_position=rejoin)))
+            laps_left = RACE_LAPS - self.lap + 1 - self.d / TRACK_LENGTH
             out.append(Packet(self._hdr(PacketId.CAR_STATUS), PacketId.CAR_STATUS, CarStatusData(
-                fuel_in_tank=self.fuel, fuel_capacity=110.0, fuel_remaining_laps=self.fuel / 1.7, max_rpm=12000,
+                fuel_in_tank=self.fuel, fuel_capacity=110.0, fuel_remaining_laps=self.fuel / 1.72 - laps_left,
+                max_rpm=12000,
                 idle_rpm=4000, max_gears=8, drs_allowed=1, actual_tyre_compound=18, visual_tyre_compound=17,
                 tyres_age_laps=self.lap - 1, vehicle_fia_flags=0, ers_store_energy=3.2e6)))
         if self.frame % 60 == 1:
@@ -209,12 +285,23 @@ class DemoSimulator:
             pos += length
         return False
 
-    def _lap_data(self) -> LapData:
+    def _all_lap_data(self) -> tuple:
+        totals = [self.total_distance] + [r.total for r in self.rivals]
+        order = sorted(range(len(totals)), key=lambda i: -totals[i])
+        pos = {idx: p + 1 for p, idx in enumerate(order)}
+        cars = [self._lap_data(pos[0])]
+        for i, r in enumerate(self.rivals, start=1):
+            lap_d = r.total % TRACK_LENGTH if r.total >= 0 else r.total
+            cars.append(LapData(lap_distance=float(lap_d), total_distance=float(r.total), car_position=pos[i],
+                                current_lap_num=max(1, int(r.total // TRACK_LENGTH) + 1), driver_status=4,
+                                result_status=2))
+        return tuple(cars + [LapData()] * (MAX_CARS - len(cars)))
+
+    def _lap_data(self, position: int = 1) -> LapData:
         return LapData(
             last_lap_time_ms=self.last_lap_ms, current_lap_time_ms=int(self.lap_ms), sector1_time_ms=self.s1,
-            sector2_time_ms=self.s2, lap_distance=float(self.d), total_distance=float((self.lap - 1) * TRACK_LENGTH
-                                                                                     + self.d),
-            car_position=1, current_lap_num=self.lap, sector=0 if not self.s1 else (1 if not self.s2 else 2),
+            sector2_time_ms=self.s2, lap_distance=float(self.d), total_distance=float(self.total_distance),
+            car_position=position, current_lap_num=self.lap, sector=0 if not self.s1 else (1 if not self.s2 else 2),
             current_lap_invalid=int(self.invalid), driver_status=1 if self.lap > 1 or self.scenario != "quick_lap"
             else 4, result_status=2)
 

@@ -14,4 +14,4 @@ CONNECTION_STALE_S = 2.0          # no valid packet for this long => no longer "
 UDP_RECV_BUFFER_BYTES = 1 << 20   # absorbs short stalls on the receive thread
 TELEMETRY_RATE_HZ = 60            # nominal; used only to size bounded buffers
 MAX_LAP_SAMPLES = TELEMETRY_RATE_HZ * 60 * 10  # hard cap per lap (10 min at 60 Hz)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2

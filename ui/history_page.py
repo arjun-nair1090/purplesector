@@ -1,6 +1,7 @@
-"""Recorded sessions: browse, open in analysis, export, delete."""
+"""Recorded sessions: progress per track, browse, open in analysis, export, import, delete."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -18,12 +19,18 @@ def render() -> None:
     sessions = repo.list_sessions()
     if sessions.empty:
         st.info("No sessions recorded yet. Sessions are saved automatically in Live mode while 'Record sessions' "
-                "is on. Each completed lap is written with its telemetry.")
+                "is on. Each completed lap is written with its telemetry. You can also import a friend's "
+                "exported session below.")
+        _import(repo)
         return
+    _progress(repo, sessions)
+    source = sessions.source.map({"live": "Live (F1 22)", "demo": "Demo (synthetic)"})
+    imported = sessions.imported.astype(bool)
+    source = source.where(~imported, "Imported · " + sessions.driver_name.fillna("other driver"))
     table = pd.DataFrame({
         "ID": sessions.id,
         "Started": sessions.started_at.str.replace("T", " "),
-        "Source": sessions.source.map({"live": "Live (F1 22)", "demo": "Demo (synthetic)"}),
+        "Source": source,
         "Track": sessions.track_name.fillna("unknown"),
         "Session": sessions.session_type.fillna("—"),
         "Laps": sessions.laps,
@@ -47,6 +54,8 @@ def render() -> None:
             "S2": laps.sector2_ms.map(lambda v: c.fmt_lap(v) if pd.notna(v) else "—"),
             "S3": laps.sector3_ms.map(lambda v: c.fmt_lap(v) if pd.notna(v) else "—"),
             "Valid": laps.valid.astype(bool), "Full data": laps.samples_complete.astype(bool),
+            "Fuel used (kg)": laps.fuel_used_kg.map(lambda v: f"{v:.2f}" if pd.notna(v) else "—"),
+            "Tyre wear (%)": laps.tyre_wear_pct.map(lambda v: f"{v:.2f}" if pd.notna(v) else "—"),
             "Samples": laps.sample_count,
         }), hide_index=True)
 
@@ -78,3 +87,54 @@ def render() -> None:
             st.session_state.pop("analysis_session_id", None)
             st.toast(f"Session #{sid} deleted")
             st.rerun()
+    _import(repo)
+
+
+def _progress(repo, sessions) -> None:
+    """Best valid lap per session on one track: are you actually getting faster?"""
+    own = sessions[(sessions.imported == 0) & sessions.best_lap_ms.notna() & sessions.track_name.notna()]
+    if own.empty:
+        return
+    tracks = (own.groupby(["track_name", "source"]).size().reset_index(name="n")
+              .sort_values("n", ascending=False))
+    keys = list(zip(tracks.track_name, tracks.source, strict=True))
+    st.subheader("Progress")
+    a, b = st.columns([1, 3])
+    track, source = a.selectbox("Track", keys, format_func=lambda k: k[0] + (" (demo)" if k[1] == "demo" else ""))
+    df = repo.progress(track, source)
+    if len(df) < 2:
+        b.info(f"One session with a valid lap at {track} so far. The chart appears from your second session.")
+        return
+    first, best = df.best_lap_ms.iloc[0], df.best_lap_ms.min()
+    gained = (best - first) / 1000
+    a.metric("Personal best", c.fmt_lap(best),
+             f"{gained:+.3f} s vs first session" if abs(gained) >= 0.0005 else None,
+             delta_color="inverse")
+    if abs(gained) < 0.0005:
+        a.caption("Same as your first session here.")
+    a.caption(f"{len(df)} sessions with a valid lap. Your laps only; imported laps never count.")
+    with b:
+        st.plotly_chart(c.progress_chart(df), config={"displayModeBar": False, "responsive": True})
+
+
+def _import(repo) -> None:
+    if done := st.session_state.pop("import_done", None):
+        st.success(done)
+    with st.expander("Import a friend's lap"):
+        st.caption("Load another driver's PurpleSector JSON export (History → Export JSON on their PC). Their laps "
+                   "show up as reference laps on Session analysis for the same track, labelled with their name. "
+                   "They never count as your personal best.")
+        up = st.file_uploader("Session export (.json)", type=["json"], key="import_file")
+        name = st.text_input("Driver name", max_chars=48, placeholder="e.g. Sam")
+        if st.button("Import", disabled=up is None, type="primary"):
+            try:
+                sid = repo.import_session(json.loads(up.getvalue().decode("utf-8")), name)
+            except (ValueError, UnicodeDecodeError) as exc:
+                st.error(f"Import failed: {exc}")
+                return
+            s = repo.get_session(sid)
+            st.session_state["import_done"] = (f"Imported session #{sid}: {s['driver_name']} at {s['track_name']}. "
+                                               "Open Session analysis and pick one of your laps on that track to "
+                                               "compare.")
+            st.session_state.pop("import_file", None)  # clear the uploader
+            st.rerun()  # so the session table above lists it

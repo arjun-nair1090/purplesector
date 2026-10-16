@@ -12,7 +12,9 @@ from enum import Enum, auto
 from analysis.statistics import best_sectors
 from config.defaults import MAX_LAP_SAMPLES
 
-SAMPLE_FIELDS = ("session_time", "lap_ms", "lap_distance", "speed", "throttle", "brake", "steer", "gear", "rpm")
+BASE_SAMPLE_FIELDS = ("session_time", "lap_ms", "lap_distance", "speed", "throttle", "brake", "steer", "gear", "rpm")
+POSITION_FIELDS = ("pos_x", "pos_y", "pos_z")  # world position from the motion packet; None until one arrives
+SAMPLE_FIELDS = BASE_SAMPLE_FIELDS + POSITION_FIELDS
 MAX_SAMPLE_GAP_S = 0.5
 
 
@@ -27,8 +29,10 @@ class CompletedLap:
     samples_complete: bool      # whole lap recorded without gaps
     pit_lap: bool
     out_lap: bool
-    samples: list = field(default_factory=list, repr=False)  # tuples in SAMPLE_FIELDS order
+    samples: list = field(default_factory=list, repr=False)  # tuples in SAMPLE_FIELDS order (positions optional)
     max_speed_kph: float | None = None
+    fuel_used_kg: float | None = None    # fuel reading at the line vs the previous line crossing
+    tyre_wear_pct: float | None = None   # wear added this lap on the most-worn tyre
 
     @property
     def timed(self) -> bool:
@@ -74,6 +78,10 @@ class LapTracker:
         self.laps: list[CompletedLap] = []
         self._cur: _CurrentLap | None = None
         self._last_lap_data = None
+        self._position: tuple = (None, None, None)
+
+    def on_motion(self, player_motion) -> None:
+        self._position = player_motion.position
 
     # -- queries --
     @property
@@ -132,7 +140,7 @@ class LapTracker:
             return
         cur.samples.append((session_time, lap.current_lap_time_ms, lap.lap_distance, car.speed,
                             round(car.throttle * 100, 1), round(car.brake * 100, 1), car.steer,
-                            car.gear, car.engine_rpm))
+                            car.gear, car.engine_rpm, *self._position))
 
     # -- internals --
     @staticmethod

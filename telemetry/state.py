@@ -70,6 +70,9 @@ class Snapshot:
     air_temp_c: int | None = None
     game_paused: bool | None = None
     safety_car_status: int | None = None
+    pit_window_ideal_lap: int | None = None   # game's strategy; None when the game sends 0
+    pit_window_latest_lap: int | None = None
+    pit_rejoin_position: int | None = None
     # car status
     fuel_kg: float | None = None
     fuel_capacity_kg: float | None = None
@@ -176,6 +179,9 @@ class TelemetryState:
                 s.air_temp_c = d.air_temperature
                 s.game_paused = bool(d.game_paused)
                 s.safety_car_status = d.safety_car_status
+                s.pit_window_ideal_lap = d.pit_window_ideal_lap or None
+                s.pit_window_latest_lap = d.pit_window_latest_lap or None
+                s.pit_rejoin_position = d.pit_rejoin_position or None
             elif pid == PacketId.CAR_STATUS:
                 s.fuel_kg = round(d.fuel_in_tank, 2)
                 s.fuel_capacity_kg = round(d.fuel_capacity, 1)

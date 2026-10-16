@@ -11,6 +11,7 @@ from telemetry.packet_models import (
     MAX_CARS,
     PACKET_SIZES,
     SESSION_HISTORY_LAPS_OFFSET,
+    SESSION_PIT_WINDOW_OFFSET,
     SESSION_SAFETY_CAR_OFFSET,
     PacketHeader,
     PacketId,
@@ -42,11 +43,23 @@ def build_packet(hdr: PacketHeader, record=None, *, prefix: bytes = b"", tail: b
     return bytes(buf)
 
 
+def build_cars(hdr: PacketHeader, records: dict, *, prefix: bytes = b"") -> bytes:
+    """Per-car packets with several cars filled in: {car index: record}."""
+    buf = bytearray(build_packet(hdr, prefix=prefix))
+    for idx, rec in records.items():
+        raw = pack_record(rec)
+        start = HEADER_SIZE + len(prefix) + idx * len(raw)
+        buf[start:start + len(raw)] = raw
+    return bytes(buf)
+
+
 def build_session(hdr: PacketHeader, session) -> bytes:
     buf = bytearray(build_packet(hdr))
     raw = pack_record(session)
     buf[HEADER_SIZE:HEADER_SIZE + len(raw)] = raw
     buf[SESSION_SAFETY_CAR_OFFSET] = session.safety_car_status
+    o = SESSION_PIT_WINDOW_OFFSET
+    buf[o:o + 3] = bytes((session.pit_window_ideal_lap, session.pit_window_latest_lap, session.pit_rejoin_position))
     return bytes(buf)
 
 
