@@ -61,7 +61,7 @@ def render() -> None:
             rows = svc.state.history()
             if rows:
                 st.plotly_chart(c.live_chart(c.history_series(rows), svc.settings.history_window_s),
-                                key="live_chart", config={"displayModeBar": False})
+                                key="live_chart", config={"displayModeBar": False, "responsive": True})
             else:
                 st.html('<div class="ps-panel ps-meta" style="min-height:430px">Traces appear here once '
                         'telemetry is flowing. They show the last '
@@ -81,7 +81,10 @@ def _stats(svc) -> None:
     done = laps["laps"]
     cols = st.columns(6)
     cols[0].metric("Laps completed", len(done), help="Laps whose lap time the game has reported this session")
-    cols[1].metric("Best valid lap", c.fmt_lap(laps["best"].lap_time_ms) if laps["best"] else "—")
+    cons = laps["consistency_s"]
+    cols[1].metric("Consistency", f"±{cons:.3f} s" if cons is not None else "—",
+                   help="Standard deviation of your valid lap times this session (needs 3 or more laps). "
+                        "Lower means more consistent.")
     cols[2].metric("Peak speed", f'{s["peak_speed_kph"]} km/h' if s else "—")
     cols[3].metric("Mean sampled speed", f'{s["mean_speed_kph"]:.0f} km/h' if s else "—",
                    help="Arithmetic mean of every received speed sample this session (fixed-rate sampling)")

@@ -47,6 +47,24 @@ def brake_rise_times(samples, start_pct: float = 10.0, peak_share: float = 0.8) 
     return rises
 
 
+def best_sectors(laps) -> tuple:
+    """Best time per sector across valid, non-pit laps (session-best sectors)."""
+    timed = [lap for lap in laps if lap.timed]
+    return tuple(min((lap.sectors[i] for lap in timed if lap.sectors[i]), default=None) for i in range(3))
+
+
+def theoretical_best_ms(laps) -> int | None:
+    """Ideal lap: the sum of your own best sectors. Needs all three sector times."""
+    sectors = best_sectors(laps)
+    return sum(sectors) if all(sectors) else None
+
+
+def consistency_s(laps) -> float | None:
+    """Sample standard deviation of valid lap times, in seconds (needs 3+ laps)."""
+    times = [lap.lap_time_ms for lap in laps if lap.timed]
+    return float(np.std(times, ddof=1)) / 1000.0 if len(times) >= 3 else None
+
+
 @dataclass
 class SessionStats:
     """Running counters for the session in progress (measured from received telemetry)."""

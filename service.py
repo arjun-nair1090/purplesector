@@ -18,8 +18,9 @@ import uuid
 from dataclasses import asdict
 
 from analysis.coach import Category, Coach, CoachConfig, Priority
+from analysis.lap_comparison import delta_at, reference_curve
 from analysis.lap_tracker import LapEventKind, LapTracker
-from analysis.statistics import SessionStats
+from analysis.statistics import SessionStats, consistency_s, theoretical_best_ms
 from config.settings import Settings, load_settings, save_settings, setup_logging
 from demo.simulator import LOOPBACK_TRACK_NAME, DemoRunner, is_synthetic_uid
 from demo.simulator import TRACK_NAME as DEMO_TRACK_NAME
@@ -56,6 +57,7 @@ class AppService:
         self.mode = settings.mode
         self.session_uid: int | None = None
         self.loopback_test = False  # synthetic packets over real UDP
+        self._reset_pace()
         self.recording_key: str | None = None
         self._recorded_meta: dict = {}
         self._last_frames: dict[int, int] = {}
@@ -152,12 +154,14 @@ class AppService:
                 events = self._guard("lap tracker", self.tracker.on_lap_data, packet.data) or []
                 for ev in events:
                     self._guard("lap event", self._on_lap_event, ev)
+                self.delta_s = delta_at(self._ref_curve, packet.data.lap_distance, packet.data.current_lap_time_ms)
             elif pid == PacketId.CAR_TELEMETRY:
                 d = packet.data
                 self._guard("lap tracker", self.tracker.on_telemetry, h.session_time, d)
                 self._guard("stats", self.stats.add, d.speed, d.throttle * 100, d.brake * 100)
             elif pid == PacketId.SESSION:
                 self._guard("recorder", self._update_recording_meta)
+                self._guard("pace", self._ensure_alltime, self.state.snapshot().track_name)
             elif pid == PacketId.EVENT:
                 self._guard("event", self._on_game_event, packet.data)
 
@@ -179,8 +183,72 @@ class AppService:
         self.stats.reset()
         self.coach.reset()
         self._last_frames.clear()
+        self._reset_pace()
         if session_uid is not None:
             self._begin_recording(session_uid)
+            if self.mode == "demo":
+                self._ensure_alltime(DEMO_TRACK_NAME)
+
+    # ---------------- pace: live delta and all-time best ----------------
+    def _reset_pace(self) -> None:
+        self._history_best_ms: int | None = None  # best recorded lap on this track from earlier sessions
+        self._alltime_curve = None   # (lap ms, curve) of the fastest fully recorded earlier lap on this track
+        self._session_curve = None   # (lap ms, curve) of this session's best fully recorded lap
+        self._ref_curve = None
+        self.delta_ref: str | None = None
+        self.delta_s: float | None = None
+        self._pace_track: str | None = None
+
+    def _ensure_alltime(self, track: str | None) -> None:
+        """Load the recorded best for this track once per session, off the packet thread."""
+        if not track or track == self._pace_track:
+            return
+        self._pace_track = track
+        threading.Thread(target=self._load_alltime, args=(track, self.mode, self.session_uid),
+                         name="pace-loader", daemon=True).start()
+
+    def _load_alltime(self, track: str, source: str, session_uid: int | None) -> None:
+        try:
+            best = self.repo.best_lap_ms(track, source)
+            ref = self.repo.best_reference_lap(track, source)
+            curve = None
+            if ref is not None:
+                c = reference_curve(list(ref[1].itertuples(index=False, name=None)))
+                curve = (ref[0], c) if c is not None else None
+        except Exception:
+            log.exception("Loading recorded best for %s failed", track)
+            return
+        with self._lock:
+            if session_uid != self.session_uid:
+                return  # the session changed while we were loading
+            self._history_best_ms = best
+            self._alltime_curve = curve
+            self._pick_reference()
+
+    def _pick_reference(self) -> None:
+        """Delta reference = the faster of the recorded PB and this session's best (both fully recorded).
+        On a tie this session's lap wins, so "PB (recorded)" always means a lap from an earlier session."""
+        options = [(ref[0], rank, ref[1], label) for rank, ref, label in
+                   ((0, self._session_curve, "Session best"), (1, self._alltime_curve, "PB (recorded)")) if ref]
+        if options:
+            _, _, self._ref_curve, self.delta_ref = min(options, key=lambda o: (o[0], o[1]))
+        else:
+            self._ref_curve = self.delta_ref = None
+
+    def _update_pace(self, lap) -> None:
+        if lap is self.tracker.best_lap() and lap.samples_complete:
+            c = reference_curve(lap.samples)
+            if c is not None:
+                self._session_curve = (lap.lap_time_ms, c)
+                self._pick_reference()
+
+    @property
+    def alltime_best_ms(self) -> int | None:
+        """Best lap on this track including this session, or None when there is no earlier history."""
+        if self._history_best_ms is None:
+            return None
+        best = self.tracker.best_lap()
+        return min(self._history_best_ms, best.lap_time_ms) if best else self._history_best_ms
 
     # ---------------- coaching ----------------
     def _speak(self, events) -> None:
@@ -192,7 +260,9 @@ class AppService:
         if k == LapEventKind.LAP_COMPLETED:
             if self.recording_key:
                 self.writer.save_lap(self.recording_key, ev.lap)
-            self._speak(self.coach.on_lap_completed(ev.lap, self.tracker))
+            self._speak(self.coach.on_lap_completed(ev.lap, self.tracker, self._history_best_ms,
+                                                    self.state.snapshot().track_name))
+            self._update_pace(ev.lap)
         elif k == LapEventKind.LAP_INVALIDATED:
             self._speak(self.coach.simple(f"invalid:{ev.lap_number}", Category.LAP_PERFORMANCE,
                                           f"Lap {ev.lap_number} invalidated", Priority.HIGH,
@@ -319,7 +389,9 @@ class AppService:
             laps = list(self.tracker.laps)
             best = self.tracker.best_lap()
             return {"laps": laps, "best": best, "best_sectors": self.tracker.best_sectors(),
-                    "current_lap": self.tracker.current_lap_number}
+                    "current_lap": self.tracker.current_lap_number,
+                    "delta_s": self.delta_s, "delta_ref": self.delta_ref, "alltime_best_ms": self.alltime_best_ms,
+                    "theoretical_best_ms": theoretical_best_ms(laps), "consistency_s": consistency_s(laps)}
 
     def coach_events(self) -> list:
         with self._lock:

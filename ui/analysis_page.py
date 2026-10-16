@@ -87,7 +87,7 @@ def render() -> None:
         st.warning(f"Comparison inconclusive: {reason}")
     if cmp.frame is not None:
         st.plotly_chart(c.comparison_chart(cmp.frame, f"Lap {lap.lap_number}", f"Reference (lap {ref.lap_number})"),
-                        config={"displayModeBar": False})
+                        config={"displayModeBar": False, "responsive": True})
     if cmp.conclusive:
         st.subheader("Segments to review")
         st.caption("Time difference per 200 m segment (measured). Observed differences describe what was "

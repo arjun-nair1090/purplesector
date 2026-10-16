@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+from analysis.statistics import best_sectors
 from config.defaults import MAX_LAP_SAMPLES
 
 SAMPLE_FIELDS = ("session_time", "lap_ms", "lap_distance", "speed", "throttle", "brake", "steer", "gear", "rpm")
@@ -85,11 +86,7 @@ class LapTracker:
 
     def best_sectors(self) -> tuple:
         """Best individual sector times among valid timed laps (session-best sectors)."""
-        out = []
-        for i in range(3):
-            vals = [lap.sectors[i] for lap in self.laps if lap.timed and lap.sectors[i]]
-            out.append(min(vals) if vals else None)
-        return tuple(out)
+        return best_sectors(self.laps)
 
     # -- input --
     def on_lap_data(self, lap) -> list[LapEvent]:

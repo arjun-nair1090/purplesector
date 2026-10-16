@@ -44,6 +44,26 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     return d[dist > prev_max]  # strictly increasing distance
 
 
+def reference_curve(samples) -> tuple[np.ndarray, np.ndarray] | None:
+    """(lap distance m, lap time ms) of a reference lap, for the live delta. None if too sparse."""
+    if not samples:
+        return None
+    df = _clean(samples_frame(samples))
+    if len(df) < MIN_SAMPLES:
+        return None
+    return df["lap_distance"].to_numpy(float), df["lap_ms"].to_numpy(float)
+
+
+def delta_at(curve, distance_m: float, lap_ms: int) -> float | None:
+    """Seconds up (+) or down (-) on the reference at this lap distance; None outside its coverage."""
+    if curve is None or distance_m < 0:
+        return None
+    dist, ms = curve
+    if distance_m < dist[0] or distance_m > dist[-1]:
+        return None
+    return (lap_ms - float(np.interp(distance_m, dist, ms))) / 1000.0
+
+
 def align(df: pd.DataFrame, grid: np.ndarray, max_gap_m: float = MAX_GAP_M) -> dict[str, np.ndarray]:
     dist = df["lap_distance"].to_numpy(float)
     out = {}

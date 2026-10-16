@@ -104,9 +104,21 @@ def rule_session_best(lap: CompletedLap, previous_best: CompletedLap | None) -> 
         return None
     gain = (previous_best.lap_time_ms - lap.lap_time_ms) / 1000
     return CoachEvent(f"pb:{lap.lap_number}", Category.PERSONAL_RECORD,
-                      f"Personal best this session: {fmt_lap(lap.lap_time_ms)} (−{gain:.3f} s)", Priority.HIGH,
+                      f"Session best: {fmt_lap(lap.lap_time_ms)} (−{gain:.3f} s)", Priority.HIGH,
                       Confidence.HIGH, f"Valid lap {lap.lap_number} vs previous best lap {previous_best.lap_number} "
-                      "(game timing)", speech=f"Personal best by {gain:.2f} seconds. Nice lap.")
+                      "(game timing)", speech=f"Session best by {gain:.2f} seconds. Nice lap.")
+
+
+def rule_alltime_best(lap: CompletedLap, alltime_ms: int | None, track: str | None) -> CoachEvent | None:
+    """Beats the best valid lap PurpleSector has ever recorded on this track (same source)."""
+    if not lap.timed or alltime_ms is None or lap.lap_time_ms >= alltime_ms:
+        return None
+    gain = (alltime_ms - lap.lap_time_ms) / 1000
+    where = track or "this track"
+    return CoachEvent(f"alltime_pb:{lap.lap_number}", Category.PERSONAL_RECORD,
+                      f"Personal best at {where}: {fmt_lap(lap.lap_time_ms)} (−{gain:.3f} s)", Priority.HIGH,
+                      Confidence.HIGH, f"Valid lap {lap.lap_number} vs your best recorded lap {fmt_lap(alltime_ms)} "
+                      "(game timing)", speech=f"Personal best! {gain:.2f} seconds quicker than your best recorded lap here.")
 
 
 def rule_sector_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s: float) -> CoachEvent | None:
@@ -202,12 +214,18 @@ class Coach:
         self.events.append(event)
         return True
 
-    def on_lap_completed(self, lap: CompletedLap, tracker) -> list[CoachEvent]:
-        """`tracker.laps` already contains `lap` as its last entry."""
+    def on_lap_completed(self, lap: CompletedLap, tracker, alltime_ms: int | None = None,
+                         track: str | None = None) -> list[CoachEvent]:
+        """`tracker.laps` already contains `lap` as its last entry. `alltime_ms` is the recorded best
+        on this track from earlier sessions (None if there is no history)."""
         c = self.config
         previous = tracker.laps[:-1]
         prev_best = min((p for p in previous if p.timed), key=lambda p: p.lap_time_ms, default=None)
-        candidates = [rule_session_best(lap, prev_best), rule_lap_completed(lap)]
+        if alltime_ms is not None and prev_best is not None:
+            alltime_ms = min(alltime_ms, prev_best.lap_time_ms)  # must also beat earlier laps this session
+        alltime = rule_alltime_best(lap, alltime_ms, track)
+        # an all-time PB supersedes the session-best call
+        candidates = [alltime or rule_session_best(lap, prev_best), rule_lap_completed(lap)]
         if prev_best is not None and lap is not prev_best:
             candidates += [
                 rule_sector_loss(lap, prev_best, c.sector_loss_threshold_s),

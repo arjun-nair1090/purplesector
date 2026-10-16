@@ -96,6 +96,27 @@ class SessionRepository:
         with self._conn() as c:
             return pd.read_sql_query(sql, c, params=(track_name,))
 
+    def best_lap_ms(self, track_name: str | None, source: str) -> int | None:
+        """Best valid, non-pit lap ever recorded on this track from this source (live never mixes with demo)."""
+        if not track_name:
+            return None
+        with self._conn() as c:
+            row = c.execute("SELECT MIN(l.lap_time_ms) FROM laps l JOIN sessions s ON s.id = l.session_id "
+                            "WHERE l.valid = 1 AND l.pit_lap = 0 AND l.out_lap = 0 AND s.track_name = ? "
+                            "AND s.source = ?", (track_name, source)).fetchone()
+            return row[0]
+
+    def best_reference_lap(self, track_name: str | None, source: str) -> tuple[int, pd.DataFrame] | None:
+        """(lap time ms, samples) of the fastest fully recorded valid lap on this track, for the live delta."""
+        if not track_name:
+            return None
+        with self._conn() as c:
+            row = c.execute("SELECT l.id, l.lap_time_ms FROM laps l JOIN sessions s ON s.id = l.session_id "
+                            "WHERE l.valid = 1 AND l.samples_complete = 1 AND l.pit_lap = 0 AND l.out_lap = 0 "
+                            "AND s.track_name = ? AND s.source = ? ORDER BY l.lap_time_ms LIMIT 1",
+                            (track_name, source)).fetchone()
+        return None if row is None else (row["lap_time_ms"], self.lap_samples(row["id"]))
+
     def delete_session(self, session_id: int) -> bool:
         with self._conn() as c, c:
             return c.execute("DELETE FROM sessions WHERE id = ?", (session_id,)).rowcount > 0

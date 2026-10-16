@@ -1,5 +1,6 @@
 """PurpleSector — F1 22 telemetry dashboard and race engineer. Run: streamlit run app.py"""
 import streamlit as st
+import streamlit.components.v1 as components
 
 from service import get_service
 from ui import analysis_page, dashboard, history_page, settings_page
@@ -19,3 +20,17 @@ st.session_state["_pages"] = pages
 nav = st.navigation(list(pages.values()), position="top")
 dashboard.sidebar()
 nav.run()
+
+# Plotly only re-measures on a window resize; opening/closing the sidebar changes the content width
+# without one, leaving charts at a stale width. Re-dispatch a resize whenever the main area changes size.
+components.html("""<script>
+const w = window.parent;
+if (!w.__psResizeHook) {
+  w.__psResizeHook = true;
+  const main = w.document.querySelector('[data-testid="stMain"]');
+  let settle;
+  const fire = () => w.dispatchEvent(new Event('resize'));
+  // fire now, and again once the sidebar's slide animation has finished
+  if (main) new ResizeObserver(() => { fire(); clearTimeout(settle); settle = setTimeout(fire, 400); }).observe(main);
+}
+</script>""", height=0)

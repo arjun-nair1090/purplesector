@@ -34,7 +34,11 @@ CSS = f"""
            font-size:.82rem; font-weight:600; border:1px solid currentColor; }}
 .ps-dot {{ width:.55rem; height:.55rem; border-radius:50%; background:currentColor; }}
 .ps-panel {{ background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:.7rem .9rem; }}
-.ps-panel.top {{ min-height:14.2rem; container-type:inline-size; }}
+.ps-panel.top {{ min-height:14.2rem; height:100%; box-sizing:border-box; container-type:inline-size; }}
+/* top-row panels stretch to the tallest one: let Streamlit's wrappers fill their column */
+[data-testid="stColumn"]:has(.ps-panel.top) > [data-testid="stVerticalBlock"],
+[data-testid="stColumn"]:has(.ps-panel.top) [data-testid="stElementContainer"],
+[data-testid="stColumn"]:has(.ps-panel.top) [data-testid="stHtml"] {{ height:100%; }}
 .ps-label {{ color:var(--muted); font-size:.75rem; margin-bottom:.15rem; }}
 .ps-speedrow {{ display:flex; gap:.6rem; align-items:flex-end; justify-content:space-between; }}
 .ps-speedrow > div:first-child {{ min-width:0; }}
@@ -54,7 +58,7 @@ CSS = f"""
 .ps-steer .c {{ position:absolute; left:50%; top:-2px; bottom:-2px; width:1px; background:var(--muted); }}
 .ps-steer .k {{ position:absolute; top:1px; bottom:1px; width:6px; margin-left:-3px; border-radius:2px; background:var(--blue); }}
 .ps-row {{ display:flex; justify-content:space-between; align-items:baseline; gap:.6rem; margin:.25rem 0; }}
-.ps-row b {{ font-size:1.15rem; font-variant-numeric:tabular-nums; }}
+.ps-row b {{ font-size:1.15rem; font-variant-numeric:tabular-nums; white-space:nowrap; }}
 .ps-big {{ font-size:2.1rem; font-weight:700; font-variant-numeric:tabular-nums; line-height:1; }}
 .ps-sectors {{ display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin-top:.5rem; }}
 .ps-sector {{ padding:.35rem .45rem; border-radius:4px; background:#2A2F3A; color:var(--text); }}
@@ -64,6 +68,15 @@ CSS = f"""
 .ps-sector.green {{ background:var(--green); color:#06210F; }}
 .ps-sector.yellow {{ background:var(--yellow); color:#2A2100; }}
 .ps-sector.live {{ outline:2px solid var(--text); outline-offset:-2px; }}
+.ps-lapline {{ display:flex; justify-content:space-between; align-items:center; gap:.5rem; }}
+.ps-delta {{ text-align:right; line-height:1.05; }}
+.ps-delta b {{ display:block; font-size:clamp(1.25rem, 9cqw, 1.9rem); font-weight:700;
+              font-variant-numeric:tabular-nums; padding:.1rem .45rem; border-radius:6px; }}
+.ps-delta small {{ color:var(--muted); font-size:.68rem; white-space:nowrap; }}
+.ps-delta.gain b {{ color:var(--green); background:rgba(57,217,138,.12); }}
+.ps-delta.loss b {{ color:var(--red); background:rgba(255,92,92,.12); }}
+.ps-delta.even b {{ color:var(--text); background:rgba(233,236,242,.08); }}
+.ps-delta.none b {{ color:#3A404D; }}
 .ps-msg {{ font-size:1.08rem; font-weight:600; line-height:1.3; color:var(--text); margin:.15rem 0 .35rem; }}
 .ps-meta {{ color:var(--muted); font-size:.8rem; }}
 .ps-tyres {{ display:grid; grid-template-columns:1fr 1fr; gap:6px; }}
@@ -205,13 +218,28 @@ def inputs_block(snap) -> str:
             + "</div>")
 
 
+def delta_badge(delta_s, ref_label) -> str:
+    """Live delta to the reference lap: green when gaining (negative), red when losing."""
+    if delta_s is None:
+        return ('<div class="ps-delta none"><b>—</b><small>Δ n/a until a full clean lap is recorded</small></div>')
+    if abs(delta_s) < 0.0005:  # rounds to 0.000: level with the reference, neither gaining nor losing
+        cls, text = "even", "0.000"
+    else:
+        cls = "gain" if delta_s < 0 else "loss"
+        text = f"{delta_s:+.3f}".replace("-", "−")
+    return f'<div class="ps-delta {cls}"><b>{text}</b><small>vs {esc(ref_label)}</small></div>'
+
+
 def lap_block(snap, laps_view) -> str:
     best = laps_view["best"]
     best_s = laps_view["best_sectors"]
     last_lap = laps_view["laps"][-1] if laps_view["laps"] else None
-    invalid = f' <span style="color:{RED};font-size:.9rem">invalid</span>' if snap.lap_invalid else ""
+    invalid = f' · <span style="color:{RED};font-weight:600">invalid</span>' if snap.lap_invalid else ""
     best_ms = best.lap_time_ms if best else None
     game_best = snap.best_lap_ms_game
+    pb = laps_view.get("alltime_best_ms")
+    ideal = laps_view.get("theoretical_best_ms")
+    ideal_gap = f' <span class="ps-meta">({(ideal - best_ms) / 1000:+.3f})</span>'.replace("-", "−")         if ideal and best_ms else ""
     # sectors: current lap's completed sectors, otherwise blank
     cur = [snap.sector1_ms, snap.sector2_ms, None]
     live_idx = (snap.sector or 0) - 1
@@ -224,11 +252,17 @@ def lap_block(snap, laps_view) -> str:
         last_cls = f' style="color:{PURPLE}"' if last_lap is best else f' style="color:{YELLOW}"'
     return (
         '<div class="ps-panel top">'
-        f'<div class="ps-label">Current lap{"" if snap.lap_number is None else " " + str(snap.lap_number)}</div>'
-        f'<div class="ps-big{" ps-idle" if snap.current_lap_ms is None else ""}">{fmt_lap(snap.current_lap_ms)}{invalid}</div>'
+        f'<div class="ps-label">Current lap{"" if snap.lap_number is None else " " + str(snap.lap_number)}{invalid}</div>'
+        '<div class="ps-lapline">'
+        f'<div class="ps-big{" ps-idle" if snap.current_lap_ms is None else ""}">{fmt_lap(snap.current_lap_ms)}</div>'
+        f'{delta_badge(laps_view.get("delta_s"), laps_view.get("delta_ref"))}</div>'
         f'<div class="ps-row"><span class="ps-label">Last lap</span><b{last_cls}>{fmt_lap(snap.last_lap_ms)}</b></div>'
-        f'<div class="ps-row"><span class="ps-label">Best valid lap (recorded)</span>'
+        f'<div class="ps-row"><span class="ps-label">Session best</span>'
         f'<b style="color:{PURPLE}">{fmt_lap(best_ms)}</b></div>'
+        + (f'<div class="ps-row"><span class="ps-label">Personal best (recorded)</span>'
+           f'<b>{fmt_lap(pb)}</b></div>' if pb else "")
+        + f'<div class="ps-row"><span class="ps-label" title="Sum of your best S1, S2 and S3 from valid laps this session">Ideal lap (best sectors)</span>'
+        f'<b>{fmt_lap(ideal)}{ideal_gap}</b></div>'
         + (f'<div class="ps-row"><span class="ps-label">Best lap (game history)</span><b>{fmt_lap(game_best)}</b></div>'
            if game_best else "")
         + f'<div class="ps-sectors">{sectors}</div></div>'

@@ -7,7 +7,7 @@
   <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-1F232C?style=flat-square">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-1F232C?style=flat-square">
   <img alt="Runs offline" src="https://img.shields.io/badge/runs-100%25%20offline-39D98A?style=flat-square">
-  <img alt="78 tests" src="https://img.shields.io/badge/tests-78%20passing-39D98A?style=flat-square">
+  <img alt="92 tests" src="https://img.shields.io/badge/tests-92%20passing-39D98A?style=flat-square">
 </p>
 
 <h3 align="center">Stop guessing where the lap went.<br>Put PurpleSector on your second monitor and find out.</h3>
@@ -27,6 +27,9 @@ You know the feeling. The lap felt mega, the timer says otherwise, and the game 
 
 | | |
 |---|---|
+| **⏱️ Live delta** | A big **−0.214** / **+0.380** next to your lap timer, measured against your recorded personal best on this track or your session best, whichever is faster. Green means you're gaining, red means you're losing. |
+| **🏆 Real personal bests** | PurpleSector remembers your best lap on every track. Beat it and you hear *"Personal best!"*. Beat only today's best and you get a *session best*. It never mixes the two up. |
+| **🧩 Ideal lap and consistency** | Your best three sectors added together: the lap you've *already* proven you can drive. Plus your lap-to-lap spread, so you know whether to chase pace or consistency. |
 | **🟪 Timing-screen sectors** | Each sector lights up like the real timing tower: purple for your session best, yellow when you're slower. You can read it at a glance from the cockpit. |
 | **🎧 A race engineer, not a chatterbox** | Short radio calls over offline Windows speech. Personal bests, invalidated laps, the sector that cost you, and the corner where you lost the most time. If the evidence isn't there, it stays quiet. |
 | **📏 Metre-by-metre lap comparison** | Two laps are aligned on lap distance, not time, so the running delta shows exactly where you gained and lost. Pick any clean lap from any session on the same track as the reference. |
@@ -41,7 +44,8 @@ Every message comes with a confidence level and the evidence behind it, shown on
 
 | Radio call | When you hear it | Based on |
 |---|---|---|
-| *"Personal best by 0.31 seconds. Nice lap."* | A **valid** lap beats your previous best valid lap this session | Game lap timing |
+| *"Personal best! 0.12 seconds quicker than your best recorded lap here."* | A **valid** lap beats every lap PurpleSector has recorded on this track, including earlier laps today | Game lap timing + your recorded laps |
+| *"Session best by 0.31 seconds. Nice lap."* | A **valid** lap beats your previous best valid lap this session, but not your recorded personal best | Game lap timing |
 | *"Lap 7, 1 25.9"* | Every completed lap | Game lap timing |
 | *"Lap invalidated."* | The game flags your current lap invalid | Game lap-invalid flag |
 | *"Sector 2 was 0.4 slower than your best."* | A valid lap's worst sector is ≥ 0.25 s off your best lap | Game sector times |
@@ -109,7 +113,7 @@ To view the dashboard on a tablet, change `address = "localhost"` to `address = 
 On the **Session analysis** page, pick a lap and a reference. You get:
 
 - **Lap and sector deltas** straight from game timing, measured rather than estimated.
-- **Running delta** along the lap, from the distance-aligned telemetry.
+- **Running delta** along the lap, from the distance-aligned telemetry. The same idea powers the live delta on the dashboard: your current game lap time against the reference lap's time at the same lap distance.
 - **Speed, throttle and brake overlays** on the same distance axis.
 - **Segments to review**: the five 200 m segments where you lost the most time, with what was measurably different in each (minimum speed, braking point, full-throttle point).
 
@@ -199,7 +203,6 @@ Check your setup any time with:
 
 ## Known limitations
 
-- Personal-best calls are **per session**. All-time references are available on the Analysis page.
 - The lap in progress when a session ends or the app closes is not saved. Only completed laps are stored.
 - Motion packets aren't decoded yet, so there's no track map.
 - Only the player's car is analysed; the split-screen second player is ignored.
@@ -209,7 +212,7 @@ Check your setup any time with:
 ## For developers
 
 ```powershell
-.venv\Scripts\python -m pytest     # 78 tests, about 6 s, no game required
+.venv\Scripts\python -m pytest     # 92 tests, about 6 s, no game required
 .venv\Scripts\ruff check .
 ```
 
