@@ -106,3 +106,17 @@ def test_memory_bounded_sample_retention():
         tr.on_lap_data(lap(i + 1, 10, last=20000 + i))  # lap 1 fastest
     kept = [bool(lp.samples) for lp in tr.laps]
     assert kept == [True, False, False, True, True]  # best + 2 most recent
+
+
+def test_flashback_across_line_forgets_the_undone_lap():
+    """Rewinding back across the line undoes the lap that just finished: it must not stay in the session
+    (it would count twice towards best lap, ideal lap and consistency once re-driven)."""
+    tr = LapTracker()
+    drive(tr, 1, 0, 90000)
+    tr.on_lap_data(lap(2, 100, last=90000))
+    assert [lp.lap_number for lp in tr.laps] == [1]
+    ev = tr.on_lap_data(lap(1, 89000))
+    assert next(e for e in ev if e.kind == LapEventKind.FLASHBACK).lap is None
+    assert tr.laps == [] and tr.best_lap() is None
+    tr.on_lap_data(lap(2, 100, last=89500))  # lap 1 re-driven
+    assert [(lp.lap_number, lp.lap_time_ms) for lp in tr.laps] == [(1, 89500)]

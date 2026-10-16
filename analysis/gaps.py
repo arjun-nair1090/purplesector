@@ -93,6 +93,8 @@ class GapTracker:
         if self._cars is None or player >= MAX_CARS:
             return None, None
         me = self._cars[player].car_position
+        if not me:  # no position yet: P1 would otherwise look like the car "behind"
+            return None, None
         by_pos = {c.car_position: i for i, c in enumerate(self._cars)
                   if c.result_status == RESULT_ACTIVE and c.car_position and i != player}
         return by_pos.get(me - 1), by_pos.get(me + 1)

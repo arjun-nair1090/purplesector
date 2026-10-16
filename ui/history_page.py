@@ -128,7 +128,7 @@ def _import(repo) -> None:
         name = st.text_input("Driver name", max_chars=48, placeholder="e.g. Sam")
         if st.button("Import", disabled=up is None, type="primary"):
             try:
-                sid = repo.import_session(json.loads(up.getvalue().decode("utf-8")), name)
+                sid = repo.import_session(json.loads(up.getvalue().decode("utf-8-sig")), name)
             except (ValueError, UnicodeDecodeError) as exc:
                 st.error(f"Import failed: {exc}")
                 return

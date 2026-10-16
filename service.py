@@ -288,13 +288,25 @@ class AppService:
             self._ref_curve = self.delta_ref = None
 
     def _update_pace(self, lap) -> None:
-        if lap.samples_complete and self.track_map is None:
+        # a pit or out lap would draw the pit lane into the outline
+        if lap.samples_complete and not lap.pit_lap and not lap.out_lap and self.track_map is None:
             self._set_track_map(samples_frame(lap.samples), f"lap {lap.lap_number}")
         if lap is self.tracker.best_lap() and lap.samples_complete:
             c = reference_curve(lap.samples)
             if c is not None:
                 self._session_curve = (lap.lap_time_ms, c)
                 self._pick_reference()
+
+    def _on_laps_undone(self, lap_number: int) -> None:
+        """A flashback back across the line removed laps from `lap_number` on: re-derive what depended
+        on them, and take them out of the recording too."""
+        if self.recording_key:
+            self.writer.undo_laps_from(self.recording_key, lap_number)
+        self.resources.reset()  # the stored line reading belongs to a lap that no longer happened
+        best = self.tracker.best_lap()
+        c = reference_curve(best.samples) if best is not None and best.samples_complete else None
+        self._session_curve = (best.lap_time_ms, c) if c is not None else None
+        self._pick_reference()
 
     @property
     def alltime_best_ms(self) -> int | None:
@@ -320,6 +332,8 @@ class AppService:
             self._speak(self.coach.on_lap_completed(ev.lap, self.tracker, self._history_best_ms, snap.track_name,
                                                     self.track_map.corners if self.track_map else None))
             self._update_pace(ev.lap)
+        elif k == LapEventKind.FLASHBACK and ev.crossed_line:
+            self._on_laps_undone(ev.lap_number)
         elif k == LapEventKind.LAP_INVALIDATED:
             self._speak(self.coach.simple(f"invalid:{ev.lap_number}", Category.LAP_PERFORMANCE,
                                           f"Lap {ev.lap_number} invalidated", Priority.HIGH,

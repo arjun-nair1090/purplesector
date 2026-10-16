@@ -13,12 +13,24 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import socket
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 log = logging.getLogger(__name__)
 PATH = "/overlay.json"
+
+
+class _Server(ThreadingHTTPServer):
+    # HTTPServer turns on SO_REUSEADDR, which on Windows lets a second app bind the same port silently.
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: nobody else may share this port
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def serve(port: int, payload) -> ThreadingHTTPServer | None:
@@ -44,11 +56,10 @@ def serve(port: int, payload) -> ThreadingHTTPServer | None:
             pass  # 10 requests a second would flood the log
 
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        server = _Server(("127.0.0.1", port), Handler)
     except OSError as exc:
         log.warning("Overlay endpoint unavailable on port %d: %s", port, exc)
         return None
-    server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="overlay-http", daemon=True).start()
     return server
 

@@ -369,3 +369,102 @@ def test_new_settings_are_validated():
     assert "radio_button" in Settings(radio_button=13).validate()
     assert "overlay_port" in Settings(overlay_port=20777).validate()  # clashes with the telemetry port
     assert not {"radio_button", "overlay_port"} & set(Settings(radio_button=12, overlay_port=8777).validate())
+
+
+# ---------------- review fixes ----------------
+
+def test_no_neighbours_until_the_player_has_a_position():
+    gt = GapTracker()
+    gt.on_lap_data(0.0, cars(car(0, 0.0), car(1, 50.0), car(2, -10.0)))  # player's position not set yet
+    assert gt.neighbours(0) == (None, None)
+
+
+def test_overlay_port_cannot_be_shared_by_two_apps():
+    import overlay
+    port = free_port()
+    first = overlay.serve(port, dict)
+    try:
+        assert first is not None
+        assert overlay.serve(port, dict) is None  # Windows SO_REUSEADDR would let this bind silently
+    finally:
+        first.shutdown()
+        first.server_close()
+
+
+def _flashback_service(tmp_path, monkeypatch):
+    import service as svc
+    monkeypatch.setattr(svc, "save_settings", lambda s: s.validate())
+    return svc.AppService(Settings(mode="demo", data_dir=str(tmp_path)), engine_factory=FakeEngine)
+
+
+def test_flashback_across_the_line_does_not_fake_fuel_use(tmp_path, monkeypatch):
+    from telemetry.packet_models import CarDamageData, CarStatusData, Packet, PacketHeader, PacketId
+
+    app = _flashback_service(tmp_path, monkeypatch)
+    t = [0.0]
+
+    def send(pid, data, cars_=None):
+        t[0] += 0.02
+        hdr = PacketHeader(packet_format=2022, packet_id=int(pid), session_uid=0xDE40_0000_0042, session_time=t[0],
+                           frame_identifier=int(t[0] * 1000))
+        app.ingest(Packet(hdr, pid, data, cars_), "demo")
+
+    def lap_data(num, ms, last=0):
+        d = LapData(last_lap_time_ms=last, current_lap_time_ms=ms, current_lap_num=num, car_position=1,
+                    result_status=2, driver_status=1)
+        send(PacketId.LAP_DATA, d, cars(d))
+
+    def fuel(kg):
+        send(PacketId.CAR_STATUS, CarStatusData(fuel_in_tank=kg))
+        send(PacketId.CAR_DAMAGE, CarDamageData(tyres_wear=(1.0, 1.0, 1.0, 1.0)))
+
+    fuel(50.0)
+    lap_data(1, 0)
+    lap_data(2, 10, last=90000)          # line 1: measuring starts
+    fuel(48.0)
+    lap_data(3, 10, last=90000)          # lap 2 used 2.0 kg
+    assert app.tracker.laps[-1].fuel_used_kg == pytest.approx(2.0)
+    fuel(49.9)                           # flashback back into lap 2 restores fuel
+    lap_data(2, 89000)
+    fuel(48.1)
+    lap_data(3, 10, last=89900)          # lap 2 re-driven: only 1.8 kg since the rewind point, not a full lap
+    assert [lp.lap_number for lp in app.tracker.laps] == [1, 2]
+    assert app.tracker.laps[-1].fuel_used_kg is None
+    app.shutdown()
+
+
+def test_track_map_is_never_drawn_from_a_pit_lap(tmp_path, monkeypatch):
+    app = _flashback_service(tmp_path, monkeypatch)
+    df = demo_lap_frame()
+    rows = list(df.itertuples(index=False, name=None))
+    pit = CompletedLap(1, 90000, None, None, None, valid=True, samples_complete=True, pit_lap=True, out_lap=False,
+                       samples=rows)
+    app._update_pace(pit)
+    assert app.track_map is None
+    clean = CompletedLap(2, 90000, None, None, None, valid=True, samples_complete=True, pit_lap=False,
+                         out_lap=False, samples=rows)
+    app._update_pace(clean)
+    assert app.track_map is not None and app.track_map_source == "lap 2"
+    app.shutdown()
+
+
+def test_laps_undone_by_a_flashback_are_dropped_from_the_recording(tmp_path, monkeypatch):
+    """Otherwise a lap the game took back could become a "PB (recorded)" next session."""
+    from storage.session_repository import SessionRepository
+    app = _flashback_service(tmp_path, monkeypatch)
+    app.settings.record_demo = True
+    app.writer.start()
+    sim = DemoSimulator("quick_lap")
+    while sim.lap < 3:
+        for p in sim.step():
+            app.ingest(p, "demo")
+    sid = app.writer.session_id(app.recording_key)
+    repo = SessionRepository(app.repo.db_path)
+    assert wait_until(lambda: repo.laps(sid).lap_number.tolist() == [1, 2])
+    from telemetry.packet_models import Packet, PacketId
+    last = next(p for p in sim.step() if p.packet_id == PacketId.LAP_DATA)
+    rewound = LapData(**{**{f: getattr(last.data, f) for f in last.data.__dataclass_fields__},
+                         "current_lap_num": 2, "current_lap_time_ms": 80000})
+    app.ingest(Packet(last.header, PacketId.LAP_DATA, rewound, cars(rewound)), "demo")
+    assert wait_until(lambda: repo.laps(sid).lap_number.tolist() == [1])
+    app.shutdown()

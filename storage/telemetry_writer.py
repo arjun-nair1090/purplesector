@@ -66,6 +66,9 @@ class TelemetryWriter:
     def save_lap(self, key: str, lap) -> bool:
         return self._submit("lap", key, lap, list(lap.samples))  # capture samples now; tracker may trim later
 
+    def undo_laps_from(self, key: str, lap_number: int) -> bool:
+        return self._submit("undo", key, lap_number)
+
     def end_session(self, key: str, status: str = "complete") -> bool:
         return self._submit("end", key, status)
 
@@ -94,6 +97,8 @@ class TelemetryWriter:
             self.repo.save_lap(sid, *args)
             self.laps_written += 1
             self._lap_counts[key] += 1
+        elif op == "undo":
+            self._lap_counts[key] = self.repo.delete_laps_from(sid, *args)
         elif op == "end":
             if self._lap_counts.pop(key, 0):
                 self.repo.finish_session(sid, *args)

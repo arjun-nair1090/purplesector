@@ -1,6 +1,7 @@
 """Theme, formatters and HTML/Plotly builders. Pure functions of data, so they're testable."""
 from __future__ import annotations
 
+import base64
 import html
 import math
 import time
@@ -29,6 +30,11 @@ CSS = f"""
           border-radius:6px; margin-bottom:.6rem; }}
 .ps-brand {{ font-weight:700; font-size:1.15rem; letter-spacing:.02em; color:var(--text); }}
 .ps-brand b {{ color:var(--purple); }}
+/* ps-hook: the invisible resize-hook iframe from app.py */
+[data-testid="stElementContainer"]:has(iframe[srcdoc*="__psResizeHook"]) {{ position:absolute; height:0;
+  overflow:hidden; pointer-events:none; }}
+.ps-brand:has(.ps-mark) {{ display:inline-flex; align-items:center; gap:.45em; font-style:italic; }}
+.ps-mark {{ height:.95em; width:auto; flex-shrink:0; }}
 .ps-kv {{ display:flex; flex-direction:column; line-height:1.15; }}
 .ps-kv small {{ color:var(--muted); font-size:.72rem; }}
 .ps-kv span {{ color:var(--text); font-size:.98rem; font-variant-numeric:tabular-nums; }}
@@ -114,6 +120,15 @@ CSS = f"""
 </style>
 """
 
+# the PurpleSector mark: three timing bars stepping up, the last one a purple sector (docs/mark.svg)
+_MARK_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 12 63 40">'
+             '<path d="M9 50.5L20.5 50.5L27.2 34.5L15.7 34.5Z" fill="#4A5060"/>'
+             '<path d="M25.5 50.5L37 50.5L47.9 24.5L36.4 24.5Z" fill="#8D94A3"/>'
+             '<path d="M42 50.5L53.5 50.5L69 13.5L57.5 13.5Z" fill="#A66CFF"/></svg>')
+# st.html strips inline <svg>, so the mark goes in as an image
+MARK = f'<img class="ps-mark" alt="" src="data:image/svg+xml;base64,{base64.b64encode(_MARK_SVG.encode()).decode()}">'
+BRAND = f'{MARK}<span>Purple<b>Sector</b></span>'
+
 CONNECTION_COLORS = {
     ConnectionState.CONNECTED: GREEN, ConnectionState.WAITING: YELLOW, ConnectionState.RECONNECTING: YELLOW,
     ConnectionState.DISCONNECTED: MUTED, ConnectionState.UNSUPPORTED_FORMAT: RED,
@@ -194,7 +209,7 @@ def header_bar(snap, conn_state, mode, voice_status, voice_enabled, recording) -
     if snap.game_paused:
         session = (session or "") + " (paused)"
     return (
-        '<div class="ps-bar"><span class="ps-brand">Purple<b>Sector</b></span>'
+        f'<div class="ps-bar"><span class="ps-brand">{BRAND}</span>'
         f"{mode_pill}{conn}"
         + kv("Session", val(session)) + kv("Track", val(snap.track_name)) + kv("Lap", val(laps))
         + kv("Position", val(snap.position, "P{}")) + kv("Voice coach", voice) + kv("Session log", rec)
@@ -474,7 +489,9 @@ def track_map_chart(m, dots=(), *, color=None, color_label=None, height=340):
         fig.add_scatter(x=u, y=v, mode="lines", line=dict(color="#5A6170", width=4), hoverinfo="skip",
                         showlegend=False)
     else:
-        lim = float(np.nanmax(np.abs(color))) or 1.0
+        finite = np.abs(np.asarray(color, float))
+        finite = finite[np.isfinite(finite)]
+        lim = float(finite.max()) if finite.size and finite.max() > 0 else 1.0
         fig.add_scatter(x=m.u, y=m.v, mode="markers", showlegend=False,
                         marker=dict(size=6, color=color, cmin=-lim, cmax=lim,
                                     colorscale=[[0, GREEN], [0.5, "#5A6170"], [1, RED]],

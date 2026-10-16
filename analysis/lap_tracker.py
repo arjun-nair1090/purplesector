@@ -57,6 +57,7 @@ class LapEvent:
     kind: LapEventKind
     lap_number: int
     lap: CompletedLap | None = None
+    crossed_line: bool = False  # FLASHBACK only: rewound back into an earlier lap
 
 
 class _CurrentLap:
@@ -107,9 +108,11 @@ class LapTracker:
             # skipping a lap number means we missed telemetry: the new lap can't be complete either
             self._cur = _CurrentLap(lap.current_lap_num, lap.current_lap_num != cur.lap_number + 1)
         elif lap.current_lap_num < cur.lap_number:
-            # flashback / restart back across the line: the lap in progress is gone
+            # flashback / restart back across the line: the lap in progress is gone, and so is every lap
+            # the rewind undid (it is driven again and reported again)
             self._cur = _CurrentLap(lap.current_lap_num, True)
-            events.append(LapEvent(LapEventKind.FLASHBACK, lap.current_lap_num))
+            self.laps = [done for done in self.laps if done.lap_number < lap.current_lap_num]
+            events.append(LapEvent(LapEventKind.FLASHBACK, lap.current_lap_num, crossed_line=True))
         elif prev and lap.current_lap_time_ms + 100 < prev.current_lap_time_ms:
             # flashback within the lap: drop samples recorded after the rewind point
             cur.samples = [s for s in cur.samples if s[1] <= lap.current_lap_time_ms]

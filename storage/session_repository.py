@@ -73,6 +73,12 @@ class SessionRepository:
         c.executemany(f"INSERT INTO samples (lap_id, {', '.join(SAMPLE_FIELDS)}) VALUES (?{', ?' * n})",
                       ((lap_id, *s, *(None,) * (n - len(s))) for s in samples))  # pad missing positions
 
+    def delete_laps_from(self, session_id: int, lap_number: int) -> int:
+        """Drop laps a flashback undid. Returns how many laps the session still has."""
+        with self._conn() as c, c:
+            c.execute("DELETE FROM laps WHERE session_id = ? AND lap_number >= ?", (session_id, lap_number))
+            return c.execute("SELECT COUNT(*) FROM laps WHERE session_id = ?", (session_id,)).fetchone()[0]
+
     # ---------- reads (UI) ----------
     def list_sessions(self) -> pd.DataFrame:
         sql = """SELECT s.id, s.started_at, s.ended_at, s.source, s.track_name, s.track_id, s.session_type, s.status,

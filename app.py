@@ -1,12 +1,13 @@
 """PurpleSector — F1 22 telemetry dashboard and race engineer. Run: streamlit run app.py"""
 import streamlit as st
-import streamlit.components.v1 as components
 
+from config.defaults import PROJECT_ROOT
 from service import get_service
 from ui import analysis_page, dashboard, history_page, settings_page
 from ui.components import CSS
 
-st.set_page_config(page_title="PurpleSector", page_icon="🟪", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PurpleSector", page_icon=str(PROJECT_ROOT / "assets" / "icon.png"), layout="wide",
+                   initial_sidebar_state="expanded")
 st.html(CSS)
 get_service()  # starts the receiver/workers once per process
 
@@ -23,7 +24,7 @@ nav.run()
 
 # Plotly only re-measures on a window resize; opening/closing the sidebar changes the content width
 # without one, leaving charts at a stale width. Re-dispatch a resize whenever the main area changes size.
-components.html("""<script>
+st.iframe("""<script>
 const w = window.parent;
 if (!w.__psResizeHook) {
   w.__psResizeHook = true;
@@ -33,4 +34,4 @@ if (!w.__psResizeHook) {
   // fire now, and again once the sidebar's slide animation has finished
   if (main) new ResizeObserver(() => { fire(); clearTimeout(settle); settle = setTimeout(fire, 400); }).observe(main);
 }
-</script>""", height=0)
+</script>""", height=1)  # st.iframe rejects 0; CSS (ps-hook) takes the 1 px container out of the layout

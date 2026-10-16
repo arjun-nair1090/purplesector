@@ -154,7 +154,7 @@ def sidebar() -> None:
     svc = get_service()
     s = svc.settings
     with st.sidebar:
-        st.html('<div class="ps-brand" style="font-size:1.4rem">Purple<b>Sector</b></div>'
+        st.html(f'<div class="ps-brand" style="font-size:1.4rem">{c.BRAND}</div>'
                 '<div class="ps-meta">F1 22 telemetry and race engineer</div>')
         mode = st.segmented_control("Telemetry source", ["live", "demo"], default=svc.mode, required=True,
                                     format_func={"live": "Live (F1 22)", "demo": "Demo"}.get)
@@ -207,7 +207,15 @@ def sidebar() -> None:
             st.warning("Some settings were invalid and reset to defaults. See Settings.")
 
 
+_overlay_proc: subprocess.Popen | None = None
+
+
 def _open_overlay(port: int) -> None:
+    global _overlay_proc
+    if _overlay_proc is not None and _overlay_proc.poll() is None:
+        st.toast("The overlay is already open. Right-click it to close it.")
+        return
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console window behind the overlay on Windows
-    subprocess.Popen([sys.executable, str(PROJECT_ROOT / "overlay.py"), "--port", str(port)], creationflags=flags)
+    _overlay_proc = subprocess.Popen([sys.executable, str(PROJECT_ROOT / "overlay.py"), "--port", str(port)],
+                                     creationflags=flags)
     st.toast("Overlay opened. Drag it into place; right-click it to close.")
