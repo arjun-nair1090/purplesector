@@ -7,7 +7,7 @@ from ui import analysis_page, dashboard, history_page, settings_page
 from ui.components import CSS
 
 st.set_page_config(page_title="PurpleSector", page_icon=str(PROJECT_ROOT / "assets" / "icon.png"), layout="wide",
-                   initial_sidebar_state="expanded")
+                   initial_sidebar_state="auto")
 st.html(CSS)
 get_service()  # starts the receiver/workers once per process
 

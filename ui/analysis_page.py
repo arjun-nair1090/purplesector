@@ -34,8 +34,7 @@ def _lap_label(r) -> str:
 def render() -> None:
     svc = get_service()
     repo = svc.repo
-    st.html('<div class="ps-bar"><div class="ps-where"><b>Session analysis</b><span>lap and sector deltas from '
-            'game timing; the running delta and segment findings from distance-aligned telemetry</span></div></div>')
+    st.html('<div class="ps-bar"><div class="ps-where"><b>Session analysis</b></div></div>')
     sessions = repo.list_sessions()
     sessions = sessions[sessions.laps > 0]
     if sessions.empty:

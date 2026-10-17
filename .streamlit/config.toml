@@ -14,7 +14,7 @@ toolbarMode = "minimal"
 # Broadcast-timing palette: graphite ground, tone-stepped surfaces, timing colours for timing only.
 [theme]
 base = "dark"
-primaryColor = "#A66CFF"
+primaryColor = "#8447F0"   # white button text at 5:1; #A66CFF stays the timing purple
 backgroundColor = "#12141A"
 secondaryBackgroundColor = "#1B1E26"
 textColor = "#ECEEF2"
@@ -25,7 +25,8 @@ baseRadius = "0.2rem"
 buttonRadius = "0.2rem"
 font = "'Barlow Semi Condensed', 'Segoe UI', sans-serif"
 headingFont = "'Barlow Semi Condensed', 'Segoe UI', sans-serif"
-baseFontSize = 15
+codeFont = "'Barlow Semi Condensed', 'Segoe UI', sans-serif"   # file paths in Diagnostics, in the text face
+baseFontSize = 16
 metricValueFontWeight = 600
 dataframeHeaderBackgroundColor = "#1B1E26"
 dataframeBorderColor = "#2A2E38"

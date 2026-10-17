@@ -186,3 +186,13 @@ def test_live_traces_are_one_svg_image_split_at_gaps():
     assert svg.count('fill="none" stroke="#ECEEF2"') == 2  # speed drawn as two pieces either side of the gap
     assert "Throttle" in svg and "Brake" in svg and "Steering" in svg and "km/h" in svg
     assert c.live_traces(c.history_series([]), 30).count("<img") == 1  # empty history still draws the axes
+
+
+def test_last_call_shows_the_message_with_its_category_confidence_and_time():
+    from analysis.coach import Category, CoachEvent, Confidence, Priority
+    e = CoachEvent("k", Category.CORNERS, "Corner 5: lost 0.42 s", Priority.MEDIUM, Confidence.MEDIUM, "telemetry",
+                   timestamp=0.0)
+    html = c.last_call([e])
+    assert "Corner 5: lost 0.42 s" in html and c.esc(e.category) in html and "medium confidence" in html
+    assert ":" in html.split("confidence")[1]  # the clock time follows
+    assert "quiet" in c.last_call([]) and "quiet" not in html

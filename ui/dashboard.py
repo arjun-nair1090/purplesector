@@ -13,7 +13,10 @@ from service import get_service
 from telemetry.connection import ConnectionState
 from ui import components as c
 
-SCENARIO_LABELS = {"standard": "Continuous laps", "quick_lap": "Completed lap in ~15 s",
+PANELS = {"engineer": "Engineer", "race": "Race control", "fuel": "Fuel and tyres", "car": "Car",
+          "weather": "Weather", "field": "Against the field", "session": "Session"}
+
+SCENARIO_LABELS ={"standard": "Continuous laps", "quick_lap": "Completed lap in ~15 s",
                    "interruption": "Telemetry drop-out at 25 s"}
 
 STATE_HELP = {
@@ -57,10 +60,8 @@ def render() -> None:
         field = svc.field_view()
         field_best = tuple(r.field_ms for r in field["versus"][:3]) if field["versus"] else (None, None, None)
         left, right = st.columns([1.8, 1], gap="small")
-        with left:
-            st.html(c.hero(snap, svc.laps_view(), svc.gaps_view(), _me(field), field_best))
-            st.html(c.telemetry_strip(snap))
-            st.html(c.versus_panel(field["versus"]))
+        left.html(c.hero(snap, svc.laps_view(), svc.gaps_view(), _me(field), field_best)
+                  + c.last_call(svc.coach_events()))
         right.html(c.tower_block(field, field.get("year")))
 
     @st.fragment(run_every=max(1.0, refresh * 4))
@@ -71,17 +72,17 @@ def render() -> None:
             if rows:
                 st.html(c.live_traces(c.history_series(rows), svc.settings.history_window_s))
             else:
-                st.html('<div class="ps-panel"><div class="ps-empty" style="min-height:420px">Speed, pedals and '
+                st.html('<div class="ps-panel"><div class="ps-empty" style="min-height:540px">Speed, pedals and '
                         f'steering for the last {svc.settings.history_window_s} s appear here once telemetry is '
                         'flowing.</div></div>')
         with right:
             view = svc.map_view()
             if view["map"] is not None:
-                st.plotly_chart(c.track_map_chart(view["map"], view["dots"], height=420), key="live_map",
+                st.plotly_chart(c.track_map_chart(view["map"], view["dots"], height=380), key="live_map",
                                 config={"displayModeBar": False, "responsive": True})
                 n = len(view["map"].corners)
-                st.caption(f"Outline from {view['source']}. Corners 1 to {n} are numbered from your speed trace, "
-                           "not the circuit's official turns." if n else f"Outline from {view['source']}.")
+                st.caption(f"Outline from {view['source']}." + (" Corners numbered from your speed trace." if n
+                                                                else ""))
             else:
                 st.html('<div class="ps-panel"><div class="ps-empty" style="min-height:420px">The track map draws '
                         'itself from your first complete lap with position data, or your recorded best here. '
@@ -89,15 +90,18 @@ def render() -> None:
 
     @st.fragment(run_every=max(0.5, refresh * 2))
     def race():
+        # one panel at a time: picking another reruns only this fragment
+        pick = st.segmented_control("Panel", list(PANELS), default="engineer", required=True, key="live_panel",
+                                    format_func=PANELS.get, label_visibility="collapsed")
         snap = svc.state.snapshot()
-        a, b, d = st.columns([1.25, 1, 1], gap="small")
-        a.html(c.coach_block(svc.coach_events()))
-        b.html(c.race_control_block(svc.race_control.entries))
-        d.html(c.strategy_block(svc.strategy_view()))
-        a, b, d = st.columns([1.25, 1, 1], gap="small")
-        a.html(c.car_block(snap))
-        b.html(c.weather_block(snap))
-        d.html(_stats(svc))
+        body = {"engineer": lambda: c.coach_block(svc.coach_events()),
+                "race": lambda: c.race_control_block(svc.race_control.entries),
+                "fuel": lambda: c.strategy_block(svc.strategy_view()),
+                "car": lambda: c.car_block(snap),
+                "weather": lambda: c.weather_block(snap),
+                "field": lambda: c.versus_panel(svc.field_view()["versus"]),
+                "session": lambda: _stats(svc)}[pick or "engineer"]()
+        st.html(f'<div class="ps-panel">{body}</div>')
 
     @st.fragment(run_every=max(1.0, refresh * 4))
     def summary():
@@ -114,15 +118,14 @@ def _stats(svc) -> str:
     laps = svc.laps_view()
     cons = laps["consistency_s"]
     rows = [("Laps completed", str(len(laps["laps"]))),
-            ("Consistency, spread of valid laps", f"±{cons:.3f} s" if cons is not None else c.NA),
+            ("Spread of valid laps", f"±{cons:.3f} s" if cons is not None else c.NA),
+            ("Session time", c.fmt_duration(s["duration_s"]) if s else c.NA),
             ("Peak speed", f'{s["peak_speed_kph"]} km/h' if s else c.NA),
-            ("Mean sampled speed", f'{s["mean_speed_kph"]:.0f} km/h' if s else c.NA),
-            ("Full throttle", f'{s["full_throttle_pct"]:.0f}% of samples' if s else c.NA),
-            ("Braking", f'{s["braking_pct"]:.0f}% of samples' if s else c.NA),
-            ("Session time", c.fmt_duration(s["duration_s"]) if s else c.NA)]
-    body = "".join(f'<div class="ps-row"><span>{k}</span><b>{v}</b></div>' for k, v in rows)
-    return ('<div class="ps-panel fill"><div class="ps-title"><b>This session</b><span>from received telemetry</span>'
-            f'</div>{body}</div>')
+            ("Mean speed, all samples", f'{s["mean_speed_kph"]:.0f} km/h' if s else c.NA),
+            ("Full throttle, of samples", f'{s["full_throttle_pct"]:.0f}%' if s else c.NA),
+            ("Braking, of samples", f'{s["braking_pct"]:.0f}%' if s else c.NA)]
+    cells = [f'<div class="ps-row"><span>{k}</span><b>{v}</b></div>' for k, v in rows]
+    return f'<div class="ps-tab"><div>{"".join(cells[:3])}</div><div>{"".join(cells[3:])}</div></div>'
 
 
 def _diagnostics(svc) -> None:
@@ -176,14 +179,13 @@ def sidebar() -> None:
     s = svc.settings
     with st.sidebar:
         st.html(f'<div class="ps-brand" style="font-size:1.4rem">{c.BRAND}</div>'
-                '<div class="ps-meta">Telemetry and race engineer for F1 22 to F1 25</div>')
+                '<div class="ps-meta">Race engineer for F1 22 to 25</div>')
         mode = st.segmented_control("Telemetry source", ["live", "demo"], default=svc.mode, required=True,
                                     format_func={"live": "Live game", "demo": "Demo"}.get)
         if mode and mode != svc.mode:
             svc.update_settings(mode=mode)
             st.rerun()
         if svc.mode == "demo":
-            st.caption("Demo data is synthetic and labelled as such everywhere.")
             from demo.simulator import SCENARIOS
             sc = st.selectbox("Scenario", SCENARIOS, index=SCENARIOS.index(s.demo_scenario),
                               format_func=SCENARIO_LABELS.get)
@@ -200,7 +202,6 @@ def sidebar() -> None:
             rd = st.toggle("Save demo sessions (labelled Demo)", value=s.record_demo)
             if rd != s.record_demo:
                 svc.update_settings(record_demo=rd)
-        st.divider()
         v = st.toggle("Voice coach", value=s.voice_enabled)
         if v != s.voice_enabled:
             svc.update_settings(voice_enabled=v)
