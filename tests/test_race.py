@@ -458,6 +458,7 @@ def test_laps_undone_by_a_flashback_are_dropped_from_the_recording(tmp_path, mon
     while sim.lap < 3:
         for p in sim.step():
             app.ingest(p, "demo")
+    assert wait_until(lambda: app.writer.session_id(app.recording_key) is not None)
     sid = app.writer.session_id(app.recording_key)
     repo = SessionRepository(app.repo.db_path)
     assert wait_until(lambda: repo.laps(sid).lap_number.tolist() == [1, 2])

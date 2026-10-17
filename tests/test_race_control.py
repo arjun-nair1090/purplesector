@@ -101,6 +101,7 @@ def test_service_logs_speaks_and_records_race_control(tmp_path, monkeypatch):
     app.ingest(pen, "demo")
     assert app.race_control.entries[-1].message == "You: 5 s time penalty, pit lane speeding"
     assert wait_until(lambda: "5 second time penalty. Pit lane speeding." in engine.spoken)
+    assert wait_until(lambda: app.writer.session_id(app.recording_key) is not None)  # the writer thread creates it
     sid = app.writer.session_id(app.recording_key)
     app.shutdown()
     assert "You: 5 s time penalty, pit lane speeding" in SessionRepository(app.repo.db_path).events(sid).message.tolist()
@@ -166,6 +167,7 @@ def test_service_rewinds_race_control_on_a_flashback(tmp_path, monkeypatch):
     assert any(e.code == "PENA" for e in app.race_control.entries)
     event("FLBK", FlashbackDetails(hdr.frame_identifier, t + 1.0), 6.0, 2)
     assert not any(e.code == "PENA" for e in app.race_control.entries)
+    assert wait_until(lambda: app.writer.session_id(app.recording_key) is not None)
     sid = app.writer.session_id(app.recording_key)
     app.shutdown()
     assert "PENA" not in SessionRepository(app.repo.db_path).events(sid).code.tolist()
