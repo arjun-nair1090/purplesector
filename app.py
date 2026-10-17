@@ -12,10 +12,10 @@ st.html(CSS)
 get_service()  # starts the receiver/workers once per process
 
 pages = {
-    "live": st.Page(dashboard.render, title="Live", icon=":material/speed:", default=True),
-    "analysis": st.Page(analysis_page.render, title="Session analysis", icon=":material/timeline:", url_path="analysis"),
-    "history": st.Page(history_page.render, title="History", icon=":material/history:", url_path="history"),
-    "settings": st.Page(settings_page.render, title="Settings", icon=":material/tune:", url_path="settings"),
+    "live": st.Page(dashboard.render, title="Live", default=True),
+    "analysis": st.Page(analysis_page.render, title="Session analysis", url_path="analysis"),
+    "history": st.Page(history_page.render, title="History", url_path="history"),
+    "settings": st.Page(settings_page.render, title="Settings", url_path="settings"),
 }
 st.session_state["_pages"] = pages
 nav = st.navigation(list(pages.values()), position="top")

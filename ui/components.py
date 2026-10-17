@@ -21,8 +21,10 @@ from telemetry.connection import ConnectionState
 from telemetry.packet_models import WEATHER
 from telemetry.state import WHEELS
 
-PURPLE, GREEN, YELLOW, RED, BLUE = "#A66CFF", "#2BD47D", "#F2C230", "#FF4F4F", "#5CC8FF"
-PURPLE_TEXT = "#B48AFF"  # purple as text on a raised surface, where #A66CFF falls under 4.5:1
+# Purple appears only where F1 timing puts it: the fastest sector or lap. The interface itself is ink on
+# graphite, so a colour on screen always means something about the timing or the car.
+PURPLE, GREEN, YELLOW, RED, BLUE = "#B23FD9", "#2BD47D", "#F2C230", "#FF4F4F", "#5CC8FF"
+PURPLE_TEXT = "#D27DF0"  # the same purple as text on the dark surfaces, at 5:1 or better
 BG, PANEL, RAISED, HIGH, LINE = "#12141A", "#191C23", "#20242D", "#2A2F3A", "#262A33"
 TEXT, MUTED, FAINT, BOARD = "#ECEEF2", "#A3AAB7", "#8A909C", "#0A0B0E"
 FONT = "'Barlow Semi Condensed', 'Segoe UI', system-ui, sans-serif"
@@ -38,16 +40,22 @@ CSS = f"""
 [class^="ps-"], [class*=" ps-"] {{ font-family:{FONT}; font-variant-numeric:tabular-nums; }}
 .stApp {{ background:var(--bg); }}
 .block-container {{ padding-top:3.4rem; padding-bottom:2rem; max-width:none; }}
-::selection {{ background:rgba(166,108,255,.45); color:#fff; }}
+::selection {{ background:rgba(236,238,242,.28); color:#fff; }}
 * {{ scrollbar-color:var(--high) transparent; scrollbar-width:thin; }}
-:focus-visible {{ outline:2px solid var(--purple) !important; outline-offset:2px; }}
+:focus-visible {{ outline:2px solid var(--text) !important; outline-offset:2px; }}
+/* primary buttons are ink with dark text, not a brand colour */
+[data-testid="stBaseButton-primary"] {{ color:var(--bg) !important; }}
+[data-testid="stBaseButton-primary"] p {{ color:var(--bg) !important; font-weight:600; }}
+/* switched-on toggles: an ink track needs a dark knob to show which way it is set */
+[data-testid="stCheckbox"] label:has(input:checked) > div:not([data-testid]) > div {{ background:var(--bg) !important; }}
 [data-testid="stMetricValue"] {{ font-variant-numeric:tabular-nums; }}
 [data-testid="stMetricLabel"] p {{ color:var(--muted); }}
 [data-testid="stExpander"] details {{ background:var(--panel); border:0; }}
 [data-testid="stExpanderDetails"] {{ border:0 !important; }}
 [data-testid="stCaptionContainer"] {{ max-width:65ch; }}
-/* the panel switcher: selected option in readable purple, and it wraps on a phone instead of scrolling */
-[data-testid="stButtonGroup"] button[data-selected] {{ color:var(--purple-text) !important; }}
+/* the panel switcher: the selected option in full ink on a raised step; it wraps on a phone */
+[data-testid="stButtonGroup"] button[data-selected] {{ color:var(--text) !important; background:var(--high) !important;
+  border-color:var(--high) !important; }}
 [data-testid="stButtonGroup"] > div {{ flex-wrap:wrap; }}
 /* ps-hook: the invisible resize-hook iframe from app.py */
 [data-testid="stElementContainer"]:has(iframe[srcdoc*="__psResizeHook"]) {{ position:absolute; height:0;
@@ -55,8 +63,6 @@ CSS = f"""
 
 .ps-brand {{ font-weight:800; font-style:italic; font-size:var(--t-m); color:var(--text); display:inline-flex;
             align-items:center; gap:.45em; letter-spacing:.01em; }}
-.ps-brand b {{ color:var(--purple); font-weight:800; }}
-.ps-mark {{ height:.95em; width:auto; flex-shrink:0; }}
 
 /* header: what session this is, and whether data is flowing */
 .ps-bar {{ display:flex; flex-wrap:wrap; align-items:baseline; gap:.5rem 1.6rem; padding:.2rem 0 1rem; }}
@@ -66,7 +72,6 @@ CSS = f"""
 .ps-chips {{ display:flex; flex-wrap:wrap; align-items:center; gap:.3rem 1.2rem; margin-left:auto; }}
 .ps-chip {{ display:inline-flex; align-items:center; gap:.4rem; color:var(--muted); font-size:var(--t-s);
            white-space:nowrap; }}
-.ps-chip i {{ width:.5rem; height:.5rem; border-radius:50%; background:currentColor; display:inline-block; }}
 .ps-chip.warn {{ background:rgba(242,194,48,.14); color:var(--yellow); padding:.2rem .6rem; border-radius:3px;
                 font-weight:600; }}
 
@@ -101,7 +106,7 @@ CSS = f"""
             background:var(--high); color:var(--text); }}
 .ps-delta b {{ font-size:var(--t-x); font-weight:700; line-height:.9; letter-spacing:-.02em; white-space:nowrap; }}
 .ps-delta small {{ font-size:var(--t-m); font-weight:600; }}
-.ps-delta.gain {{ background:var(--green); color:#062A16; }}
+.ps-delta.gain {{ background:#1A7F4B; color:#fff; }}  /* racing green, not a signal light: white text at 5:1 */
 .ps-delta.loss {{ background:#D42A30; color:#fff; }}  /* a deeper red than --red: white text at 5:1 */
 .ps-delta.none {{ background:var(--raised); color:var(--muted); }}
 .ps-delta.none b {{ font-size:var(--t-l); }}
@@ -151,9 +156,9 @@ CSS = f"""
 .ps-trow .n {{ font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .ps-trow .g {{ text-align:right; color:var(--text); white-space:nowrap; }}
 .ps-trow .b {{ text-align:right; color:var(--muted); }}
-.ps-trow .b.purple {{ color:var(--purple); font-weight:600; }}
+.ps-trow .b.purple {{ color:var(--purple-text); font-weight:600; }}
 .ps-trow.me {{ background:var(--high) !important; }}
-.ps-trow.me .n, .ps-trow.me .p, .ps-trow.me .b.purple {{ color:var(--purple-text); }}
+.ps-trow.me .n, .ps-trow.me .p {{ color:#fff; }}
 .ps-vs {{ width:100%; max-width:52rem; border-collapse:collapse; font-size:var(--t-b); }}
 .ps-vs th {{ color:var(--muted); font-weight:500; text-align:right; padding:.25rem .4rem; }}
 .ps-vs td {{ text-align:right; padding:.3rem .4rem; color:var(--text); }}
@@ -183,7 +188,7 @@ CSS = f"""
 .ps-cells div {{ background:var(--raised); border-radius:3px; padding:.4rem .6rem; }}
 .ps-cells small {{ display:block; color:var(--muted); font-size:var(--t-s); }}
 .ps-cells b {{ font-size:var(--t-b); font-weight:600; }}
-.ps-cells .now {{ background:rgba(166,108,255,.24); }}
+.ps-cells .now {{ background:var(--high); box-shadow:inset 3px 0 0 var(--text); }}
 .ps-fc td:nth-child(2) {{ text-align:left; }}
 .ps-fc th:nth-child(2) {{ text-align:left; }}
 .ps-fc tr.wet td:nth-child(2), .ps-fc tr.wet td:nth-child(3) {{ color:var(--blue); font-weight:600; }}
@@ -210,17 +215,10 @@ CSS = f"""
 </style>
 """
 
-# the PurpleSector mark: three timing bars stepping up, the last one a purple sector (docs/mark.svg)
-_MARK_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 12 63 40">'
-             '<path d="M9 50.5L20.5 50.5L27.2 34.5L15.7 34.5Z" fill="#4A5060"/>'
-             '<path d="M25.5 50.5L37 50.5L47.9 24.5L36.4 24.5Z" fill="#8D94A3"/>'
-             '<path d="M42 50.5L53.5 50.5L69 13.5L57.5 13.5Z" fill="#A66CFF"/></svg>')
-# st.html strips inline <svg>, so the mark goes in as an image
-MARK = f'<img class="ps-mark" alt="" src="data:image/svg+xml;base64,{base64.b64encode(_MARK_SVG.encode()).decode()}">'
-BRAND = f'{MARK}<span>Purple<b>Sector</b></span>'
+BRAND = "PurpleSector"  # the wordmark: the name in the text face, one colour (scripts/make_brand.py)
 
 CONNECTION_COLORS = {
-    ConnectionState.CONNECTED: GREEN, ConnectionState.WAITING: YELLOW, ConnectionState.RECONNECTING: YELLOW,
+    ConnectionState.CONNECTED: MUTED, ConnectionState.WAITING: YELLOW, ConnectionState.RECONNECTING: YELLOW,
     ConnectionState.DISCONNECTED: MUTED, ConnectionState.UNSUPPORTED_FORMAT: RED,
     ConnectionState.RECEIVER_ERROR: RED,
 }
@@ -304,13 +302,13 @@ def header_bar(snap, conn_state, mode, voice_status, voice_enabled, recording) -
         "demo": '<span class="ps-chip warn">Demo, simulated data</span>',
         "loopback": '<span class="ps-chip warn">Synthetic loopback test</span>',
     }.get(mode, f'<span class="ps-chip">Live, {esc(snap.game or "F1 22 to F1 25")}</span>')
-    chips = [source, f'<span class="ps-chip" style="color:{color}"><i></i>{esc(conn_state)}</span>']
+    chips = [source, f'<span class="ps-chip" style="color:{color}">{esc(conn_state)}</span>']
     if voice_status == "unavailable":
         chips.append(f'<span class="ps-chip" style="color:{RED}">Voice unavailable</span>')
     else:
         chips.append(f'<span class="ps-chip" style="color:{TEXT if voice_enabled else MUTED}">'
                      f'Voice {"on" if voice_enabled else "off"}</span>')
-    chips.append(f'<span class="ps-chip" style="color:{RED}"><i></i>Recording</span>' if recording
+    chips.append(f'<span class="ps-chip" style="color:{TEXT}">Recording</span>' if recording
                  else f'<span class="ps-chip" style="color:{MUTED}">Not recording</span>')
     session = snap.session_type
     if session and snap.game_paused:
@@ -385,10 +383,10 @@ def timing_block(snap, laps_view, field_best=(None, None, None)) -> str:
     last = laps_view["laps"][-1] if laps_view["laps"] else None
     last_color = ""
     if last and best and last.timed:
-        last_color = f' style="color:{PURPLE if last is best else YELLOW}"'
+        last_color = f' style="color:{PURPLE_TEXT if last is best else YELLOW}"'
     invalid = f' <span style="color:{RED};font-weight:600">invalid</span>' if snap.lap_invalid else ""
     times = [("Last lap", f"<b{last_color}>{fmt_lap(snap.last_lap_ms)}</b>"),
-             ("Session best", f'<b style="color:{PURPLE if best_ms else FAINT}">{fmt_lap(best_ms)}</b>'),
+             ("Session best", f'<b style="color:{PURPLE_TEXT if best_ms else FAINT}">{fmt_lap(best_ms)}</b>'),
              ("Ideal lap", f"<b>{fmt_lap(ideal)}</b>")]
     if pb:
         times.append(("Recorded PB", f"<b>{fmt_lap(pb)}</b>"))
@@ -475,7 +473,7 @@ def versus_panel(rows) -> str:
     def gap(r):
         if r.delta_s is None:
             return "—"
-        color = PURPLE if r.delta_s <= 0 else (YELLOW if r.delta_s < 0.3 else MUTED)
+        color = PURPLE_TEXT if r.delta_s <= 0 else (YELLOW if r.delta_s < 0.3 else MUTED)
         return f'<span style="color:{color}">{minus(f"{r.delta_s:+.3f}")}</span>'
 
     def line(label, cells):
@@ -709,8 +707,8 @@ def live_traces(cols, window_s: int, w: int = 1000, h: int = 540) -> str:
             f'{window_s} seconds" src="data:image/svg+xml;base64,{data}"></div>')
 
 
-DOT_STYLE = {"player": (PURPLE, 15, "You"), "ahead": (GREEN, 11, "Car ahead"),
-             "behind": (RED, 11, "Car behind"), "other": (MUTED, 8, "Other cars")}
+DOT_STYLE = {"player": (TEXT, 15, "You", "circle"), "ahead": (MUTED, 12, "Car ahead", "circle"),
+             "behind": (MUTED, 12, "Car behind", "circle-open"), "other": ("#4A5060", 8, "Other cars", "circle")}
 
 
 def track_map_chart(m, dots=(), *, color=None, color_label=None, height=340):
@@ -757,9 +755,10 @@ def track_map_chart(m, dots=(), *, color=None, color_label=None, height=340):
     for role in ("other", "behind", "ahead", "player"):
         pts = [(x, y) for x, y, r in dots if r == role]
         if pts:
-            c, size, name = DOT_STYLE[role]
+            c, size, name, symbol = DOT_STYLE[role]
+            line = dict(width=2.5, color=c) if symbol == "circle-open" else dict(width=2, color=PANEL)
             fig.add_scatter(x=[p[0] for p in pts], y=[p[1] for p in pts], mode="markers", name=name,
-                            marker=dict(size=size, color=c, line=dict(width=2, color=PANEL)), hoverinfo="name")
+                            marker=dict(size=size, color=c, symbol=symbol, line=line), hoverinfo="name")
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False, scaleanchor="x", scaleratio=1)
     fig.update_layout(height=height, margin=dict(l=4, r=4, t=4, b=4), paper_bgcolor=PANEL, plot_bgcolor=PANEL,
@@ -774,10 +773,10 @@ def progress_chart(df):
     secs = df["best_lap_ms"] / 1000
     when = df["started_at"].str.replace("T", " ")
     best_so_far = secs.cummin()
-    fig.add_scatter(x=when, y=best_so_far, mode="lines", line=dict(color=PURPLE, width=2.5, shape="hv"),
+    fig.add_scatter(x=when, y=best_so_far, mode="lines", line=dict(color=TEXT, width=2.5, shape="hv"),
                     name="Personal best so far", hoverinfo="skip")
     fig.add_scatter(x=when, y=secs, mode="markers+lines", line=dict(color=FAINT, width=1, dash="dot"),
-                    marker=dict(size=9, color=[PURPLE if s <= b else TEXT for s, b in zip(secs, best_so_far, strict=True)]),
+                    marker=dict(size=9, color=[TEXT if s <= b else FAINT for s, b in zip(secs, best_so_far, strict=True)]),
                     name="Session best", customdata=[fmt_lap(v) for v in df["best_lap_ms"]],
                     hovertemplate="%{x}<br>%{customdata}<extra></extra>")
     lo, hi = float(secs.min()), float(secs.max())
@@ -792,7 +791,7 @@ def progress_chart(df):
 def tyre_life_chart(stints):
     """Lap time against tyre age, one series per stint, with the fitted line where there is one."""
     fig = go.Figure()
-    palette = [PURPLE, BLUE, GREEN, YELLOW, TEXT]
+    palette = [TEXT, BLUE, YELLOW, MUTED, GREEN]
     for k, s in enumerate(stints):
         colour = palette[k % len(palette)]
         timed = [lap for lap in s.laps if lap.timed]
@@ -831,7 +830,7 @@ def comparison_chart(frame, lap_label, ref_label):
         fig.add_scatter(x=d, y=frame[f"{col}_ref"], name=f"{ref_label}" if row == 2 else None, showlegend=row == 2,
                         line=dict(color=FAINT, width=1.5), connectgaps=False, row=row, col=1, legendgroup="ref")
         fig.add_scatter(x=d, y=frame[f"{col}_lap"], name=f"{lap_label}" if row == 2 else None, showlegend=row == 2,
-                        line=dict(color=PURPLE if col == "speed" else colour, width=2), connectgaps=False,
+                        line=dict(color=colour, width=2), connectgaps=False,
                         row=row, col=1, legendgroup="lap")
         fig.update_yaxes(title_text=title, row=row, col=1)
     fig.update_yaxes(title_text="Δ s", row=1, col=1)

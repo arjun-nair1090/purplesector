@@ -14,7 +14,7 @@ toolbarMode = "minimal"
 # Broadcast-timing palette: graphite ground, tone-stepped surfaces, timing colours for timing only.
 [theme]
 base = "dark"
-primaryColor = "#8447F0"   # white button text at 5:1; #A66CFF stays the timing purple
+primaryColor = "#ECEEF2"   # controls in ink; purple is kept for F1's fastest-time colour only
 backgroundColor = "#12141A"
 secondaryBackgroundColor = "#1B1E26"
 textColor = "#ECEEF2"
@@ -30,7 +30,7 @@ baseFontSize = 16
 metricValueFontWeight = 600
 dataframeHeaderBackgroundColor = "#1B1E26"
 dataframeBorderColor = "#2A2E38"
-chartCategoricalColors = ["#A66CFF", "#9CA3B0", "#2BD47D", "#FF4F4F", "#F2C230", "#5CC8FF"]
+chartCategoricalColors = ["#ECEEF2", "#5CC8FF", "#F2C230", "#9CA3B0", "#FF4F4F", "#2BD47D"]
 
 [[theme.fontFaces]]
 family = "Barlow Semi Condensed"

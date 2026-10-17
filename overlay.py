@@ -66,7 +66,7 @@ def serve(port: int, payload) -> ThreadingHTTPServer | None:
 
 # ---------------- window ----------------
 
-GREEN, RED, TEXT, MUTED, PURPLE, BG = "#2BD47D", "#FF4F4F", "#ECEEF2", "#A3AAB7", "#A66CFF", "#0A0B0E"  # pit-board black
+GREEN, RED, TEXT, MUTED, EDGE, BG = "#2BD47D", "#FF4F4F", "#ECEEF2", "#A3AAB7", "#2A2F3A", "#0A0B0E"  # pit-board black
 FONT = "Bahnschrift"
 
 
@@ -104,12 +104,12 @@ def main() -> None:
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     root.attributes("-alpha", 0.95)
-    root.configure(bg=BG, highlightthickness=2, highlightbackground=PURPLE)
+    root.configure(bg=BG, highlightthickness=2, highlightbackground=EDGE)
     root.geometry("+40+40")
 
     delta = tk.Label(root, text="—", font=(FONT, 34, "bold"), fg=MUTED, bg=BG, width=7)
     ref = tk.Label(root, text="waiting for PurpleSector", font=(FONT, 9), fg=MUTED, bg=BG)
-    gear = tk.Label(root, text="—", font=(FONT, 34, "bold"), fg=PURPLE, bg=BG, width=2)
+    gear = tk.Label(root, text="—", font=(FONT, 34, "bold"), fg=TEXT, bg=BG, width=2)
     info = tk.Label(root, text="", font=(FONT, 11), fg=TEXT, bg=BG, justify="left", anchor="w")
     call = tk.Label(root, text="", font=(FONT, 10), fg=MUTED, bg=BG, wraplength=330, justify="left", anchor="w")
     delta.grid(row=0, column=0, padx=(10, 0), pady=(6, 0), sticky="w")

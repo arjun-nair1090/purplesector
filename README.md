@@ -1,24 +1,15 @@
-<p align="center">
-  <img src="docs/banner.svg" alt="PurpleSector: live F1 telemetry and an offline race engineer. A car laps the Demo Ring track map with its detected corners while the live delta updates." width="100%">
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/wordmark-dark.png">
+  <img src="docs/wordmark-light.png" alt="PurpleSector" height="40">
+</picture>
 
-<p align="center">
-  <b>A pit wall on your second monitor and an engineer in your headset, for F1 22, F1 23, F1 24 and F1 25.</b><br>
-  It aligns every lap metre by metre, tells you which corner cost you before you reach the next one,<br>
-  and only speaks when the data backs it up. Runs offline on Windows. No account, no cloud.
-</p>
+A pit wall on your second monitor and an engineer in your headset, for F1 22 to F1 25. It lines up every lap metre by metre, tells you which corner cost you before you reach the next one, and only speaks when the data backs it up. Runs offline on Windows; no account, no cloud.
 
-<p align="center">
-  <img alt="F1 22 to F1 25" src="https://img.shields.io/badge/F1%2022%20to%2025-UDP%202022%E2%80%932025-A66CFF?style=flat-square">
-  <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-1B1E26?style=flat-square">
-  <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-1B1E26?style=flat-square">
-  <a href="https://github.com/arjun-nair1090/purplesector/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/arjun-nair1090/purplesector/actions/workflows/ci.yml/badge.svg"></a>
-</p>
+[![tests](https://github.com/arjun-nair1090/purplesector/actions/workflows/ci.yml/badge.svg)](https://github.com/arjun-nair1090/purplesector/actions/workflows/ci.yml)
 
-<p align="center">
-  <img src="docs/screenshots/live.gif" alt="The live dashboard during a Demo-mode race: a pit board with position, gap and lap, the lap timer with live delta and timing-screen sectors, the timing tower with team colours, pedal and steering gauges, scrolling telemetry traces and the track map" width="100%">
-  <br><sub>Live page during a Demo-mode race. Everything on screen is synthetic and labelled as such.</sub>
-</p>
+![The live page during a Demo-mode race: the pit board with position, gap and lap; the live delta as a full-width green or red band; lap time and timing-screen sectors; speed, gear and pedal meters; the timing tower with team colours](docs/screenshots/live.png)
+
+The live page in a Demo-mode race. Everything on it is synthetic and labelled as such.
 
 ## Try it in a minute
 
@@ -53,7 +44,7 @@ Every call shows its confidence and the evidence behind it: game lap timing, gam
 ## In a race
 
 <p align="center">
-  <img src="docs/screenshots/race.png" alt="Live page lower panels: the race engineer log with corner calls, race control messages from the game, fuel and tyre use measured per lap with the pit window, car status, the weather forecast and session statistics" width="100%">
+  <img src="docs/screenshots/race.png" alt="Live page lower half: the speed, pedal and steering traces beside the track map, and the panel switcher showing the race engineer's log with the evidence for each call" width="100%">
 </p>
 
 - **Pit board.** Your position, the gap that matters and the lap, in figures you can read at a glance from the cockpit. In a race that's the car ahead, and whether you're closing or losing per lap. In qualifying it's how far you are off the fastest lap.
@@ -62,7 +53,7 @@ Every call shows its confidence and the evidence behind it: game lap timing, gam
 - **Corner calls.** Lose time in a corner and before the next one the engineer says how much and what was different there: "Corner 4, lost 0.2. Braked 11 metres earlier." Corners are numbered from your own speed trace and compared with your delta reference on lap distance.
 - **Race control.** Penalties with the infringement, safety cars and VSCs, red flags, retirements, fastest laps, and overtakes and contact involving you, all from the game's event packets. Your penalties, safety cars and red flags are read out.
 - **Weather.** The game's forecast for the session, and a call when it shows the track going wet or drying: once when it first appears and again five minutes out.
-- **Track map.** Drawn from your own driving, with a live dot for every car: you in purple, the car ahead green, the car behind red.
+- **Track map.** Drawn from your own driving, with a live dot for every car: you in white, the cars either side of you in grey (ahead filled, behind open).
 - **Fuel and tyres.** Fuel burned and tyre wear added each lap, read at the line. From that, laps of fuel left at your actual burn and your margin at the flag, next to the game's own pit window and rejoin position.
 - **Radio on request.** Assign any wheel button to a *UDP Action* in the game and press it mid-race for delta, gaps and fuel. Nothing is read out until you ask.
 - **Overlay.** One monitor? **Open overlay** puts a small always-on-top window over the game with delta, gear, gaps, fuel and the last call. It needs the game in borderless or windowed mode.
@@ -268,13 +259,7 @@ demo/           deterministic race simulator
 ui/             pages and shared components
 static/         bundled Barlow font files (SIL Open Font License)
 packaging/      PyInstaller launcher and spec for PurpleSector.exe
-docs/           logo, banner, screenshots
+docs/           wordmark and screenshots (scripts/make_brand.py rebuilds the logo files)
 ```
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo.svg">
-    <img src="docs/logo-light.svg" alt="PurpleSector" height="44">
-  </picture>
-  <br><sub>A fan-made tool, not affiliated with Formula 1, EA or Codemasters. "F1" is a trademark of Formula One Licensing B.V. The wordmark uses Barlow (SIL Open Font License).</sub>
-</p>
+<sub>A fan-made tool, not affiliated with Formula 1, EA or Codemasters. "F1" is a trademark of Formula One Licensing B.V. The wordmark uses Barlow (SIL Open Font License).</sub>
