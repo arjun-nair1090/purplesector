@@ -36,6 +36,9 @@ class Category(StrEnum):
     BRAKING = "Braking"
     THROTTLE = "Throttle"
     SESSION = "Session events"
+    WEATHER = "Weather"
+    RACE_CONTROL = "Race control"
+    CORNERS = "Corners"
     PERSONAL_RECORD = "Personal records"
     SYSTEM = "System"
 

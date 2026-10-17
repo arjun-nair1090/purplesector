@@ -22,8 +22,9 @@ def test_invalid_values_fall_back_with_messages(tmp_path):
     s, errors = build_settings({"udp_port": 80, "udp_host": "not-an-ip", "voice_volume": "loud",
                                 "coach_verbosity": "chatty", "telemetry_format": 2021, "data_dir": str(tmp_path),
                                 "unknown_key": 1})
-    assert set(errors) == {"udp_port", "udp_host", "voice_volume", "coach_verbosity", "telemetry_format"}
-    assert s.udp_port == 20777 and s.udp_host == "127.0.0.1" and s.telemetry_format == 2022
+    # telemetry_format is a setting from v1.0 (2022 only): the year is now read from each packet, so it is ignored
+    assert set(errors) == {"udp_port", "udp_host", "voice_volume", "coach_verbosity"}
+    assert s.udp_port == 20777 and s.udp_host == "127.0.0.1" and not hasattr(s, "telemetry_format")
 
 
 def test_type_coercion_from_env_strings(tmp_path):
@@ -141,7 +142,7 @@ def test_header_labels_demo_and_missing_values():
     html = c.header_bar(Snapshot(source="demo"), ConnectionState.CONNECTED, "demo", "ready", True, False)
     assert "simulated" in html and "n/a" in html
     live = c.header_bar(Snapshot(), ConnectionState.WAITING, "live", "unavailable", True, False)
-    assert "Live" in live and "Unavailable" in live and "simulated" not in live
+    assert "Live" in live and "Voice unavailable" in live and "simulated" not in live
 
 
 def test_formatters_and_sector_colours():
@@ -151,3 +152,37 @@ def test_formatters_and_sector_colours():
     assert c.sector_class(None, 30000) == "ps-sector"
     assert c.val(None) == c.NA
     assert "<script>" not in c.val("<script>")
+
+
+def test_pit_board_says_where_the_race_gap_comes_from():
+    from analysis.field import TowerRow
+    from analysis.gaps import CarGap
+    from telemetry.state import Snapshot
+    snap = Snapshot(position=3, lap_number=5, total_laps=30)
+    gaps = {"race": True, "cars": 20, "ahead": CarGap(1, "NORRIS", 2, 1.2, None), "behind": None}
+    measured = c.pit_board(snap, gaps, None)
+    assert "+1.2" in measured and "measured" in measured
+    me = TowerRow(0, 3, "YOU", True, None, (None,) * 3, 1.345, "game", False, (False,) * 3)
+    game = c.pit_board(snap, gaps, me)
+    assert "+1.3" in game and "game" in game and "measured" not in game
+
+
+def test_rev_gauge_needs_the_games_rev_limit():
+    from telemetry.state import Snapshot
+    html = c.telemetry_strip(Snapshot(rpm=10_500, max_rpm=None))
+    assert "10.5" in html and "width:0%" in html.split("Engine")[1][:200]  # no bar against an assumed limit
+    html = c.telemetry_strip(Snapshot(rpm=10_500, max_rpm=12_000))
+    assert "width:88%" in html.split("Engine")[1][:200]
+
+
+def test_live_traces_are_one_svg_image_split_at_gaps():
+    import base64
+    import re
+    rows = [(t / 60, 200.0, 100.0, 0.0, 0.1, 6, 10000) for t in range(120)]
+    rows += [(t / 60, 150.0, 0.0, 80.0, -0.2, 3, 8000) for t in range(200, 300)]  # a gap: telemetry dropped out
+    html = c.live_traces(c.history_series(rows), 30)
+    svg = base64.b64decode(re.search(r'base64,([^"]+)"', html).group(1)).decode()
+    assert html.startswith('<div class="ps-panel">') and 'alt="' in html
+    assert svg.count('fill="none" stroke="#ECEEF2"') == 2  # speed drawn as two pieces either side of the gap
+    assert "Throttle" in svg and "Brake" in svg and "Steering" in svg and "km/h" in svg
+    assert c.live_traces(c.history_series([]), 30).count("<img") == 1  # empty history still draws the axes

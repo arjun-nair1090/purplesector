@@ -15,7 +15,7 @@ from storage.database import connect
 
 LAP_COLUMNS = ("lap_number", "lap_time_ms", "sector1_ms", "sector2_ms", "sector3_ms", "valid",
                "samples_complete", "pit_lap", "out_lap", "max_speed_kph", "sample_count", "fuel_used_kg",
-               "tyre_wear_pct")
+               "tyre_wear_pct", "tyre_age_laps", "tyre_compound")
 # your own laps only: an imported lap from another driver is never your personal best
 OWN = "s.imported = 0"
 EXPORT_FORMAT = "purplesector-session/1"
@@ -64,11 +64,12 @@ class SessionRepository:
         c.execute("DELETE FROM laps WHERE session_id = ? AND lap_number = ?", (session_id, lap.lap_number))
         cur = c.execute(
             "INSERT INTO laps (session_id, lap_number, lap_time_ms, sector1_ms, sector2_ms, sector3_ms, valid, "
-            "samples_complete, pit_lap, out_lap, max_speed_kph, sample_count, fuel_used_kg, tyre_wear_pct) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "samples_complete, pit_lap, out_lap, max_speed_kph, sample_count, fuel_used_kg, tyre_wear_pct, "
+            "tyre_age_laps, tyre_compound, setup_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (session_id, lap.lap_number, lap.lap_time_ms, lap.sector1_ms, lap.sector2_ms, lap.sector3_ms,
              int(lap.valid), int(lap.samples_complete), int(lap.pit_lap), int(lap.out_lap), lap.max_speed_kph,
-             len(samples), lap.fuel_used_kg, lap.tyre_wear_pct))
+             len(samples), lap.fuel_used_kg, lap.tyre_wear_pct, lap.tyre_age_laps, lap.tyre_compound,
+             json.dumps(lap.setup) if lap.setup else None))
         lap_id, n = cur.lastrowid, len(SAMPLE_FIELDS)
         c.executemany(f"INSERT INTO samples (lap_id, {', '.join(SAMPLE_FIELDS)}) VALUES (?{', ?' * n})",
                       ((lap_id, *s, *(None,) * (n - len(s))) for s in samples))  # pad missing positions
@@ -79,7 +80,27 @@ class SessionRepository:
             c.execute("DELETE FROM laps WHERE session_id = ? AND lap_number >= ?", (session_id, lap_number))
             return c.execute("SELECT COUNT(*) FROM laps WHERE session_id = ?", (session_id,)).fetchone()[0]
 
+    def add_event(self, session_id: int, session_time: float, lap_number: int | None, code: str, message: str) -> None:
+        with self._conn() as c, c:
+            c.execute("INSERT INTO events (session_id, session_time, lap_number, code, message) VALUES (?,?,?,?,?)",
+                      (session_id, session_time, lap_number, code, message))
+
+    def delete_events_after(self, session_id: int, session_time: float) -> None:
+        with self._conn() as c, c:
+            c.execute("DELETE FROM events WHERE session_id = ? AND session_time > ?", (session_id, session_time))
+
     # ---------- reads (UI) ----------
+    def setup(self, lap_id: int) -> dict | None:
+        """The car setup recorded at this lap's line crossing, or None (older laps, or never sent)."""
+        with self._conn() as c:
+            row = c.execute("SELECT setup_json FROM laps WHERE id = ?", (lap_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    def events(self, session_id: int) -> pd.DataFrame:
+        with self._conn() as c:
+            return pd.read_sql_query("SELECT session_time, lap_number, code, message FROM events WHERE session_id = ? "
+                                     "ORDER BY session_time, rowid", c, params=(session_id,))
+
     def list_sessions(self) -> pd.DataFrame:
         sql = """SELECT s.id, s.started_at, s.ended_at, s.source, s.track_name, s.track_id, s.session_type, s.status,
                         s.imported, s.driver_name, COUNT(l.id) AS laps,
@@ -251,10 +272,14 @@ def _validate_export(doc):
             seen.add(n)
             flags = {k: bool(_num(d.get(k), integer=True, optional=False))
                      for k in ("valid", "samples_complete", "pit_lap", "out_lap")}
+            compound = d.get("tyre_compound")
+            if compound is not None and (not isinstance(compound, str) or len(compound) > 24):
+                raise ValueError("tyre_compound must be a short text")
             laps.append(CompletedLap(n, t, *(_num(d.get(k), integer=True) for k in ("sector1_ms", "sector2_ms",
                                                                                     "sector3_ms")),
                                      **flags, max_speed_kph=_num(d.get("max_speed_kph")),
-                                     fuel_used_kg=_num(d.get("fuel_used_kg")), tyre_wear_pct=_num(d.get("tyre_wear_pct"))))
+                                     fuel_used_kg=_num(d.get("fuel_used_kg")), tyre_wear_pct=_num(d.get("tyre_wear_pct")),
+                                     tyre_age_laps=_num(d.get("tyre_age_laps"), integer=True), tyre_compound=compound))
     except ValueError as exc:
         raise ValueError(f"A lap in the export is invalid: {exc}.") from None
     columns, rows = samples.get("columns"), samples.get("rows")

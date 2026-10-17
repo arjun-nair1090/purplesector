@@ -107,3 +107,12 @@ def _free_port():
     p = s.getsockname()[1]
     s.close()
     return p
+
+
+def test_demo_telemetry_follows_the_lap_profile():
+    """Pedals and steering must change around the lap (they once froze at the start-line values)."""
+    from demo.simulator import DemoSimulator
+    sim = DemoSimulator("standard")
+    tel = [p.data for _ in range(60 * 60) for p in sim.step() if p.packet_id == PacketId.CAR_TELEMETRY]
+    assert max(t.brake for t in tel) > 0.5 and min(t.throttle for t in tel) < 0.5
+    assert max(abs(t.steer) for t in tel) > 0.2

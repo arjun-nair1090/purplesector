@@ -9,6 +9,7 @@ from collections.abc import Callable
 from config.defaults import UDP_RECV_BUFFER_BYTES
 from telemetry.connection import ConnectionMonitor
 from telemetry.decoder import IgnoredPacketError, PacketError, UnsupportedFormatError, decode_packet
+from telemetry.formats import SUPPORTED_FORMATS
 from telemetry.packet_models import Packet
 
 log = logging.getLogger(__name__)
@@ -16,11 +17,12 @@ log = logging.getLogger(__name__)
 
 class UdpReceiver:
     def __init__(self, host: str, port: int, monitor: ConnectionMonitor, on_packet: Callable[[Packet], None],
-                 supported_formats: tuple[int, ...] = (2022,)):
+                 supported_formats: tuple[int, ...] = SUPPORTED_FORMATS):
         self.host, self.port = host, port
         self.monitor = monitor
         self.on_packet = on_packet
         self.supported_formats = supported_formats
+        self.on_datagram: Callable[[bytes], None] | None = None  # raw capture, before any decoding
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -76,6 +78,11 @@ class UdpReceiver:
         self.monitor.set_running(False)
 
     def handle_datagram(self, data: bytes) -> None:
+        if self.on_datagram is not None:
+            try:
+                self.on_datagram(data)
+            except Exception:
+                log.exception("Packet capture failed")
         try:
             packet = decode_packet(data, self.supported_formats)
         except UnsupportedFormatError as exc:

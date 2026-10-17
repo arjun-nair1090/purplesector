@@ -9,18 +9,27 @@ import pandas as pd
 
 FULL_THROTTLE_PCT = 98.0
 BRAKING_PCT = 5.0
+PEDAL_OFF_PCT = 5.0        # coasting: both pedals below this ...
+COAST_MIN_KPH = 50.0       # ... while moving (not crawling in the pits)
+TURNING_STEER = 0.1        # steering input at or beyond this counts as turning
 
 
 def lap_input_stats(df: pd.DataFrame) -> dict:
     """Per-lap stats from samples (fixed-rate sampling, so sample share == time share)."""
     if df.empty:
         return {}
+    braking = df["brake"] >= BRAKING_PCT
     return {
         "samples": int(len(df)),
         "max_speed_kph": float(df["speed"].max()),
         "mean_speed_kph": float(df["speed"].mean()),
         "full_throttle_pct": float((df["throttle"] >= FULL_THROTTLE_PCT).mean() * 100),
-        "braking_pct": float((df["brake"] >= BRAKING_PCT).mean() * 100),
+        "braking_pct": float(braking.mean() * 100),
+        "coasting_pct": float(((df["throttle"] < PEDAL_OFF_PCT) & (df["brake"] < PEDAL_OFF_PCT)
+                               & (df["speed"] > COAST_MIN_KPH)).mean() * 100),
+        # of the time on the brakes, the share spent turning too: a trail-braking indicator
+        "brake_steer_pct": float((braking & (df["steer"].abs() >= TURNING_STEER)).sum() / braking.sum() * 100)
+        if braking.any() else None,
     }
 
 

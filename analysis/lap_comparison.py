@@ -87,6 +87,7 @@ class Segment:
     min_speed_ref: float | None = None
     brake_onset_diff_m: float | None = None    # + = braked later than reference
     full_throttle_diff_m: float | None = None  # + = reached full throttle later than reference
+    coast_diff_m: float | None = None          # + = more distance off both pedals than reference
 
     def observations(self) -> list[str]:
         obs = []
@@ -100,6 +101,9 @@ class Segment:
         if self.full_throttle_diff_m is not None and abs(self.full_throttle_diff_m) >= 10:
             obs.append(f"Full throttle {abs(self.full_throttle_diff_m):.0f} m "
                        f"{'later' if self.full_throttle_diff_m > 0 else 'earlier'} than reference")
+        if self.coast_diff_m is not None and abs(self.coast_diff_m) >= 15:
+            obs.append(f"Coasted {abs(self.coast_diff_m):.0f} m {'more' if self.coast_diff_m > 0 else 'less'} "
+                       "than reference")
         return obs
 
 
@@ -118,6 +122,11 @@ def _first_at_or_above(dist, values, threshold):
     return float(dist[hits[0]]) if len(hits) else None
 
 
+def _coasting(ch, sl) -> int:
+    """Grid points off both pedals (under 5%) above 50 km/h; points in a telemetry gap don't count."""
+    return int(np.sum((ch["throttle"][sl] < 5) & (ch["brake"][sl] < 5) & (ch["speed"][sl] > 50)))
+
+
 def _segment(grid, a, r, i0, i1) -> Segment | None:
     sl = slice(i0, i1 + 1)
     da, dr = a["lap_ms"][sl], r["lap_ms"][sl]
@@ -128,6 +137,8 @@ def _segment(grid, a, r, i0, i1) -> Segment | None:
     if not np.isnan(sa).all() and not np.isnan(sr).all():
         seg.min_speed_lap, seg.min_speed_ref = float(np.nanmin(sa)), float(np.nanmin(sr))
     g = grid[sl]
+    step = float(grid[1] - grid[0]) if len(grid) > 1 else STEP_M
+    seg.coast_diff_m = (_coasting(a, sl) - _coasting(r, sl)) * step
     ba = _first_at_or_above(g, np.nan_to_num(a["brake"][sl]), 20)
     br = _first_at_or_above(g, np.nan_to_num(r["brake"][sl]), 20)
     if ba is not None and br is not None:
@@ -139,6 +150,21 @@ def _segment(grid, a, r, i0, i1) -> Segment | None:
         if ta is not None and tr is not None:
             seg.full_throttle_diff_m = ta - tr
     return seg
+
+
+def segment_between(lap_df: pd.DataFrame, ref_df: pd.DataFrame, start_m: float, end_m: float,
+                    step_m: float = STEP_M) -> Segment | None:
+    """One stretch of track compared on a common distance grid; None unless both laps cover all of it."""
+    a_df, r_df = _clean(lap_df), _clean(ref_df)
+    if len(a_df) < 5 or len(r_df) < 5:
+        return None
+    grid = np.arange(np.ceil(start_m / step_m) * step_m, end_m + 1e-6, step_m)
+    if len(grid) < 3:
+        return None
+    for d in (a_df, r_df):
+        if d["lap_distance"].iloc[0] > grid[0] or d["lap_distance"].iloc[-1] < grid[-1]:
+            return None
+    return _segment(grid, align(a_df, grid), align(r_df, grid), 0, len(grid) - 1)
 
 
 def compare_laps(lap_df: pd.DataFrame, ref_df: pd.DataFrame, *, lap_time_ms: int | None = None,

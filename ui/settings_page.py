@@ -14,30 +14,30 @@ from ui.dashboard import SCENARIO_LABELS
 def render() -> None:
     svc = get_service()
     s = svc.settings
-    st.html('<div class="ps-bar"><span class="ps-brand">Settings</span>'
-            f'<span class="ps-meta">Saved to {SETTINGS_PATH}</span></div>')
+    st.html('<div class="ps-bar"><div class="ps-where"><b>Settings</b>'
+            f'<span>saved to {SETTINGS_PATH}</span></div></div>')
     for name, msg in svc.settings_errors.items():
         st.warning(f"{_label(name)} from your saved settings or environment was invalid and was reset to its "
                    f"default: {msg}")
 
-    with st.expander("Set up F1 22 telemetry", expanded=svc.monitor.packets_valid == 0 and svc.mode == "live"):
+    with st.expander("Set up the game's telemetry", expanded=svc.monitor.packets_valid == 0 and svc.mode == "live"):
         st.markdown(
-            "In F1 22 open **Game Options → Settings → Telemetry Settings** and set:\n\n"
+            "In F1 22, F1 23, F1 24 or F1 25 open **Settings → Telemetry Settings** and set:\n\n"
             "| Option | Value |\n|---|---|\n| UDP Telemetry | On |\n| UDP Broadcast Mode | Off |\n"
             f"| UDP IP Address | `{s.udp_host}` |\n| UDP Port | `{s.udp_port}` |\n"
-            "| UDP Send Rate | 60 Hz |\n| UDP Format | 2022 |\n\n"
-            "The header on the Live page turns **Connected** within a second of the first lap starting. "
-            "Packets arrive only while you're on track (not in menus).")
+            "| UDP Send Rate | 60 Hz |\n| UDP Format | the game's own year: 2022, 2023, 2024 or 2025 |\n\n"
+            "PurpleSector reads the format from each packet, so there is nothing to pick here. The header on the "
+            "Live page turns **Connected** within a second of the first lap starting. Packets arrive only while "
+            "you're on track, not in menus.")
 
     with st.form("settings"):
         st.subheader("Telemetry receiver")
-        a, b, f = st.columns(3)
-        host = a.text_input("Listen address", s.udp_host, help="127.0.0.1 when F1 22 runs on this PC. "
+        a, b = st.columns(2)
+        host = a.text_input("Listen address", s.udp_host, help="127.0.0.1 when the game runs on this PC. "
                             "0.0.0.0 listens on every network interface (e.g. a game on another PC/console).")
         port = b.number_input("UDP port", 1024, 65535, s.udp_port, step=1)
-        fmt = f.selectbox("Telemetry format", [2022], help="Only the F1 22 2022 format is decoded.")
         mode = st.radio("Telemetry source", ["live", "demo"], index=["live", "demo"].index(s.mode), horizontal=True,
-                        format_func={"live": "Live (F1 22)", "demo": "Demo (synthetic)"}.get)
+                        format_func={"live": "Live game", "demo": "Demo (synthetic)"}.get)
 
         st.subheader("Voice coach")
         a, b, f = st.columns(3)
@@ -58,7 +58,7 @@ def render() -> None:
         a, b = st.columns(2)
         radio = a.selectbox("Radio on request: wheel button", list(range(13)), index=s.radio_button,
                             format_func=lambda n: "Off" if n == 0 else f"UDP Action {n}",
-                            help="In F1 22, assign a button to this UDP Action under Controls. Pressing it makes "
+                            help="In the game, assign a button to this UDP Action under Controls. Pressing it makes "
                                  "the engineer read out your delta, gaps and fuel. The sidebar's Radio check does "
                                  "the same.")
         overlay_port = b.number_input("Overlay port (this PC only)", 1024, 65535, s.overlay_port, step=1,
@@ -71,6 +71,12 @@ def render() -> None:
             brake = f.number_input("Abrupt-brake ratio", 0.05, 0.95, float(s.brake_abrupt_ratio), 0.05,
                                    help="Flag braking when this lap's median brake rise time is below this share of "
                                         "your previous laps' average")
+            a, b = st.columns(2)
+            corner_calls = a.toggle("Corner calls", s.corner_calls,
+                                    help="After each corner where you lost time to your delta reference, the engineer "
+                                         "says how much and what was different (at most three a lap)")
+            corner_loss = b.number_input("Corner loss to report (s)", 0.02, 5.0, float(s.corner_loss_threshold_s),
+                                         0.05)
 
         st.subheader("Dashboard and recording")
         a, b, f = st.columns(3)
@@ -89,12 +95,13 @@ def render() -> None:
         saved = st.form_submit_button("Save settings", type="primary")
 
     if saved:
-        raw = dict(udp_host=host.strip(), udp_port=port, telemetry_format=fmt, mode=mode, voice_enabled=voice,
+        raw = dict(udp_host=host.strip(), udp_port=port, mode=mode, voice_enabled=voice,
                    voice_rate=rate, voice_volume=vol, voice_min_interval_s=interval, coach_verbosity=verbosity,
                    coach_min_confidence=conf, coach_cooldown_s=cooldown, sector_loss_threshold_s=sector,
                    segment_loss_threshold_s=segment, brake_abrupt_ratio=brake, history_window_s=window,
                    ui_refresh_ms=refresh, recording_enabled=rec, record_demo=rec_demo, demo_scenario=scenario,
-                   demo_speed=speed, data_dir=data_dir.strip(), radio_button=radio, overlay_port=overlay_port)
+                   demo_speed=speed, data_dir=data_dir.strip(), radio_button=radio, overlay_port=overlay_port,
+                   corner_calls=corner_calls, corner_loss_threshold_s=corner_loss)
         candidate, errors = build_settings(raw)
         if errors:
             for name, msg in errors.items():
@@ -119,7 +126,7 @@ def render() -> None:
 
 
 LABELS = {
-    "udp_host": "Listen address", "udp_port": "UDP port", "telemetry_format": "Telemetry format",
+    "udp_host": "Listen address", "udp_port": "UDP port",
     "mode": "Telemetry source", "voice_rate": "Speech rate", "voice_volume": "Volume",
     "voice_min_interval_s": "Minimum gap between messages", "coach_verbosity": "Coaching verbosity",
     "coach_min_confidence": "Minimum confidence", "coach_cooldown_s": "Repeat cooldown",
@@ -127,7 +134,7 @@ LABELS = {
     "brake_abrupt_ratio": "Abrupt-brake ratio", "history_window_s": "Trace history",
     "ui_refresh_ms": "Readout refresh", "demo_speed": "Demo speed", "demo_scenario": "Demo scenario",
     "data_dir": "Data directory", "settings_file": "Settings file", "radio_button": "Radio wheel button",
-    "overlay_port": "Overlay port",
+    "overlay_port": "Overlay port", "corner_loss_threshold_s": "Corner loss to report",
 }
 
 

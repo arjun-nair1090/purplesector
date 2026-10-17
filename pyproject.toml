@@ -1,7 +1,7 @@
 [project]
 name = "purplesector"
-version = "1.0.0"
-description = "F1 22 real-time telemetry dashboard and offline voice race engineer"
+version = "1.1.0"
+description = "F1 22-25 real-time telemetry dashboard and offline voice race engineer"
 requires-python = ">=3.11"
 
 [tool.ruff]

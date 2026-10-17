@@ -66,6 +66,12 @@ class TelemetryWriter:
     def save_lap(self, key: str, lap) -> bool:
         return self._submit("lap", key, lap, list(lap.samples))  # capture samples now; tracker may trim later
 
+    def add_event(self, key: str, session_time: float, lap_number: int | None, code: str, message: str) -> bool:
+        return self._submit("event", key, session_time, lap_number, code, message)
+
+    def undo_events_after(self, key: str, session_time: float) -> bool:
+        return self._submit("undo_events", key, session_time)
+
     def undo_laps_from(self, key: str, lap_number: int) -> bool:
         return self._submit("undo", key, lap_number)
 
@@ -97,6 +103,10 @@ class TelemetryWriter:
             self.repo.save_lap(sid, *args)
             self.laps_written += 1
             self._lap_counts[key] += 1
+        elif op == "event":
+            self.repo.add_event(sid, *args)
+        elif op == "undo_events":
+            self.repo.delete_events_after(sid, *args)
         elif op == "undo":
             self._lap_counts[key] = self.repo.delete_laps_from(sid, *args)
         elif op == "end":

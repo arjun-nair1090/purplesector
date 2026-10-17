@@ -7,3 +7,7 @@ __pycache__/
 .env
 data/*
 !data/.gitkeep
+
+# packaged build (scripts/build_exe.ps1)
+build/
+dist/

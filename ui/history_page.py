@@ -14,8 +14,8 @@ from ui import components as c
 def render() -> None:
     svc = get_service()
     repo = svc.repo
-    st.html('<div class="ps-bar"><span class="ps-brand">Session history</span>'
-            f'<span class="ps-meta">Stored locally in {c.esc(repo.db_path)}</span></div>')
+    st.html('<div class="ps-bar"><div class="ps-where"><b>History</b>'
+            f'<span>stored on this PC in {c.esc(repo.db_path)}</span></div></div>')
     sessions = repo.list_sessions()
     if sessions.empty:
         st.info("No sessions recorded yet. Sessions are saved automatically in Live mode while 'Record sessions' "
@@ -24,7 +24,7 @@ def render() -> None:
         _import(repo)
         return
     _progress(repo, sessions)
-    source = sessions.source.map({"live": "Live (F1 22)", "demo": "Demo (synthetic)"})
+    source = sessions.source.map({"live": "Live", "demo": "Demo (synthetic)"})
     imported = sessions.imported.astype(bool)
     source = source.where(~imported, "Imported · " + sessions.driver_name.fillna("other driver"))
     table = pd.DataFrame({

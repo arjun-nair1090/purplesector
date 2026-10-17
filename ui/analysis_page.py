@@ -1,13 +1,17 @@
 """Session analysis: compare any recorded lap with a reference lap on the same track."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from analysis.lap_comparison import compare_laps
+from analysis.setup import setup_diff
 from analysis.statistics import lap_input_stats
 from analysis.track_map import TrackMap, corners_in
+from analysis.tyres import stints
 from service import get_service
 from ui import components as c
 
@@ -30,9 +34,8 @@ def _lap_label(r) -> str:
 def render() -> None:
     svc = get_service()
     repo = svc.repo
-    st.html('<div class="ps-bar"><span class="ps-brand">Session analysis</span>'
-            '<span class="ps-meta">Lap and sector deltas come from game timing. Running delta and segment '
-            'findings come from distance-aligned recorded telemetry.</span></div>')
+    st.html('<div class="ps-bar"><div class="ps-where"><b>Session analysis</b><span>lap and sector deltas from '
+            'game timing; the running delta and segment findings from distance-aligned telemetry</span></div></div>')
     sessions = repo.list_sessions()
     sessions = sessions[sessions.laps > 0]
     if sessions.empty:
@@ -62,6 +65,7 @@ def render() -> None:
         st.info("No reference lap available. A reference must be a valid, fully recorded, non-pit lap on the "
                 f"same track ({session['track_name'] or 'unknown'}). Complete another clean lap to compare.")
         _single_lap(repo, laps, lap_id)
+        _session_sections(repo, sid, laps)
         return
     ref_rows = {r.id: r for r in refs.itertuples()}
     ref_ids = list(ref_rows)
@@ -111,6 +115,69 @@ def render() -> None:
             st.dataframe(pd.DataFrame(rows), hide_index=True)
         else:
             st.success("No segment lost more than 0.02 s to the reference.")
+    _inputs(lap_df, ref_df)
+    _setup(repo, lap_id, ref_id)
+    _session_sections(repo, sid, laps)
+
+
+def _inputs(lap_df, ref_df) -> None:
+    a, r = lap_input_stats(lap_df), lap_input_stats(ref_df)
+    if not a or not r:
+        return
+    st.subheader("Inputs")
+    cols = st.columns(4)
+    for col, (key, label, helptext) in zip(cols, (
+            ("full_throttle_pct", "Full throttle", "Share of the lap at 98% throttle or more"),
+            ("braking_pct", "Braking", "Share of the lap at 5% brake or more"),
+            ("coasting_pct", "Coasting", "Share of the lap off both pedals (under 5%) above 50 km/h"),
+            ("brake_steer_pct", "Braking while turning", "Of the time on the brakes, the share with 10% or more "
+                                                          "steering input: a trail-braking indicator")), strict=True):
+        if a[key] is None:
+            col.metric(label, "—", help=helptext)
+            continue
+        diff = None if r[key] is None else a[key] - r[key]
+        col.metric(label, f"{a[key]:.1f}%", None if diff is None else f"{diff:+.1f} pts vs reference",
+                   delta_color="off", help=helptext)
+    st.caption("Measured from the recorded samples of both laps. They describe how you drove, not whether it "
+               "was right: more coasting or trail braking can be faster or slower depending on the corner.")
+
+
+def _setup(repo, lap_id, ref_id) -> None:
+    rows = setup_diff(repo.setup(lap_id), repo.setup(ref_id))
+    st.subheader("Setup")
+    if rows is None:
+        st.caption("One of these laps has no recorded setup (laps from before version 1.1, or the game didn't "
+                   "send the car-setups packet).")
+    elif not rows:
+        st.caption("Both laps were driven on the same setup, as the game reported it at the line.")
+    else:
+        st.dataframe(pd.DataFrame(rows, columns=["Setting", "This lap", "Reference"]), hide_index=True)
+        st.caption("As the game reported each setup at the line crossing.")
+
+
+def _session_sections(repo, sid, laps) -> None:
+    rows = [SimpleNamespace(lap_number=int(r.lap_number), lap_time_ms=int(r.lap_time_ms),
+                            tyre_age_laps=None if pd.isna(r.tyre_age_laps) else int(r.tyre_age_laps),
+                            tyre_compound=None if pd.isna(r.tyre_compound) else r.tyre_compound,
+                            timed=bool(r.valid and not r.pit_lap and not r.out_lap and r.lap_time_ms > 0))
+            for r in laps.itertuples()]
+    found = stints(rows)
+    if any(len(s.laps) >= 2 for s in found):
+        st.subheader("Tyre life")
+        left, right = st.columns([1.6, 1])
+        left.plotly_chart(c.tyre_life_chart(found), config={"displayModeBar": False, "responsive": True})
+        right.dataframe(pd.DataFrame({
+            "Stint": range(1, len(found) + 1), "Compound": [s.compound or "—" for s in found],
+            "Laps": [len(s.laps) for s in found],
+            "Trend (s per lap)": [None if s.slope_s_per_lap is None else round(s.slope_s_per_lap, 3) for s in found]}),
+            hide_index=True)
+        right.caption("Trend is a straight line through each stint's timed laps (3 or more), against the tyre age the "
+                      "game reported. It includes everything else that changed lap to lap, above all the car getting "
+                      "lighter as fuel burns off, so it is not tyre wear alone.")
+    events = repo.events(sid)
+    if not events.empty:
+        with st.expander(f"Race control ({len(events)} messages)"):
+            st.dataframe(pd.DataFrame({"Lap": events.lap_number, "Message": events.message}), hide_index=True)
 
 
 def _delta_map(track_map, frame) -> None:
@@ -141,6 +208,9 @@ def _laps_table(laps: pd.DataFrame) -> pd.DataFrame:
         "S3": laps.sector3_ms.map(lambda v: c.fmt_lap(v) if pd.notna(v) else "—"),
         "Valid": laps.valid.astype(bool), "Pit/out lap": (laps.pit_lap | laps.out_lap).astype(bool),
         "Full data": laps.samples_complete.astype(bool), "Top speed (km/h)": laps.max_speed_kph,
+        "Tyre": [f"{t}, {int(a)} lap{'' if int(a) == 1 else 's'}" if isinstance(t, str) and pd.notna(a) else "—"
+                 for t, a in zip(laps.tyre_compound, laps.tyre_age_laps, strict=True)],
+        "Fuel used (kg)": laps.fuel_used_kg.map(lambda v: f"{v:.2f}" if pd.notna(v) else "—"),
     })
 
 

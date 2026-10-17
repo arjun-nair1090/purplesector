@@ -33,6 +33,9 @@ class CompletedLap:
     max_speed_kph: float | None = None
     fuel_used_kg: float | None = None    # fuel reading at the line vs the previous line crossing
     tyre_wear_pct: float | None = None   # wear added this lap on the most-worn tyre
+    tyre_age_laps: int | None = None     # game's tyre age at the line
+    tyre_compound: str | None = None     # visual compound (Soft, Medium, ...) at the line
+    setup: dict | None = None            # car setup at the line (game's car-setups packet)
 
     @property
     def timed(self) -> bool:
@@ -88,6 +91,15 @@ class LapTracker:
     @property
     def current_lap_number(self) -> int | None:
         return self._cur.lap_number if self._cur else None
+
+    @property
+    def current_lap_off_pace(self) -> bool:
+        """The lap in progress went through the pit lane or is an out lap."""
+        return bool(self._cur and (self._cur.pit or self._cur.out_lap))
+
+    @property
+    def current_samples(self) -> list:
+        return self._cur.samples if self._cur else []
 
     def best_lap(self, exclude: CompletedLap | None = None) -> CompletedLap | None:
         timed = [lap for lap in self.laps if lap.timed and lap is not exclude]

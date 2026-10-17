@@ -7,7 +7,7 @@ import time
 
 import streamlit as st
 
-from config.defaults import PROJECT_ROOT
+from config.defaults import FROZEN, PROJECT_ROOT
 from config.settings import recent_errors
 from service import get_service
 from telemetry.connection import ConnectionState
@@ -18,9 +18,9 @@ SCENARIO_LABELS = {"standard": "Continuous laps", "quick_lap": "Completed lap in
 
 STATE_HELP = {
     ConnectionState.DISCONNECTED: "The receiver is stopped. Switch to Live mode in the sidebar.",
-    ConnectionState.WAITING: "Listening on {ep}. Start a session in F1 22 with UDP telemetry on (see Settings for the exact options).",
+    ConnectionState.WAITING: "Listening on {ep}. Start a session in F1 22, F1 23, F1 24 or F1 25 with UDP telemetry on (see Settings for the exact options).",
     ConnectionState.RECONNECTING: "No telemetry for {age:.0f} s. The game may be paused, in a menu, or telemetry was switched off.",
-    ConnectionState.UNSUPPORTED_FORMAT: "Packets are arriving in UDP format {fmt}. Set UDP Format to 2022 in F1 22's telemetry settings.",
+    ConnectionState.UNSUPPORTED_FORMAT: "Packets are arriving in UDP format {fmt}. PurpleSector reads formats 2022 to 2025: set UDP Format to the game's own year in its telemetry settings.",
     ConnectionState.RECEIVER_ERROR: "{err}",
 }
 
@@ -37,6 +37,10 @@ def _banner(svc, state) -> str:
     return f'<div class="ps-banner"><b>{c.esc(state)}.</b> {text}</div>'
 
 
+def _me(field):
+    return next((r for r in field["tower"] if r.is_player), None)
+
+
 def render() -> None:
     svc = get_service()
     refresh = svc.settings.ui_refresh_ms / 1000
@@ -45,55 +49,58 @@ def render() -> None:
     def readouts():
         snap = svc.state.snapshot()
         state = svc.monitor.state()
-        st.html(c.header_bar(snap, state, "loopback" if svc.loopback_test else svc.mode, svc.voice.status, svc.voice.enabled, svc.recording)
-                + _banner(svc, state))
+        st.html(c.header_bar(snap, state, "loopback" if svc.loopback_test else svc.mode, svc.voice.status,
+                             svc.voice.enabled, svc.recording) + _banner(svc, state))
         if state == ConnectionState.RECEIVER_ERROR and svc.mode == "live":
             st.button("Try again", key="retry_receiver", on_click=svc.restart_receiver,
                       help="Re-open the UDP port after closing the other program")
-        laps = svc.laps_view()
-        a, b, lp, k = st.columns([1.15, 1.1, 1.25, 1.5])
-        a.html(c.speed_block(snap))
-        b.html(c.inputs_block(snap))
-        lp.html(c.lap_block(snap, laps))
-        k.html(c.coach_block(svc.coach_events()))
+        field = svc.field_view()
+        field_best = tuple(r.field_ms for r in field["versus"][:3]) if field["versus"] else (None, None, None)
+        left, right = st.columns([1.8, 1], gap="small")
+        with left:
+            st.html(c.hero(snap, svc.laps_view(), svc.gaps_view(), _me(field), field_best))
+            st.html(c.telemetry_strip(snap))
+            st.html(c.versus_panel(field["versus"]))
+        right.html(c.tower_block(field, field.get("year")))
 
     @st.fragment(run_every=max(1.0, refresh * 4))
     def charts():
-        left, right = st.columns([2.2, 1])
+        left, right = st.columns([1.8, 1], gap="small")
         with left:
             rows = svc.state.history()
             if rows:
-                st.plotly_chart(c.live_chart(c.history_series(rows), svc.settings.history_window_s),
-                                key="live_chart", config={"displayModeBar": False, "responsive": True})
+                st.html(c.live_traces(c.history_series(rows), svc.settings.history_window_s))
             else:
-                st.html('<div class="ps-panel ps-meta" style="min-height:430px">Traces appear here once '
-                        'telemetry is flowing. They show the last '
-                        f'{svc.settings.history_window_s} s of speed, throttle, brake and steering.</div>')
+                st.html('<div class="ps-panel"><div class="ps-empty" style="min-height:420px">Speed, pedals and '
+                        f'steering for the last {svc.settings.history_window_s} s appear here once telemetry is '
+                        'flowing.</div></div>')
         with right:
-            st.html(c.car_block(svc.state.snapshot()))
+            view = svc.map_view()
+            if view["map"] is not None:
+                st.plotly_chart(c.track_map_chart(view["map"], view["dots"], height=420), key="live_map",
+                                config={"displayModeBar": False, "responsive": True})
+                n = len(view["map"].corners)
+                st.caption(f"Outline from {view['source']}. Corners 1 to {n} are numbered from your speed trace, "
+                           "not the circuit's official turns." if n else f"Outline from {view['source']}.")
+            else:
+                st.html('<div class="ps-panel"><div class="ps-empty" style="min-height:420px">The track map draws '
+                        'itself from your first complete lap with position data, or your recorded best here. '
+                        'Then every car gets a dot.</div></div>')
 
     @st.fragment(run_every=max(0.5, refresh * 2))
     def race():
         snap = svc.state.snapshot()
-        m, g, s = st.columns([1.35, 1, 1])
-        with m:
-            view = svc.map_view()
-            if view["map"] is not None:
-                st.plotly_chart(c.track_map_chart(view["map"], view["dots"]), key="live_map",
-                                config={"displayModeBar": False, "responsive": True})
-                n = len(view["map"].corners)
-                st.caption(f"Outline from {view['source']}. Corner numbers 1–{n} are detected from your speed "
-                           "trace, not the circuit's official turn numbers." if n else f"Outline from {view['source']}.")
-            else:
-                st.html('<div class="ps-panel ps-meta" style="min-height:340px">The track map draws itself from '
-                        'your first complete lap with position data (or your recorded best on this track). '
-                        'Live dots then show every car.</div>')
-        g.html(c.gaps_block(svc.gaps_view(), snap))
-        s.html(c.strategy_block(svc.strategy_view()))
+        a, b, d = st.columns([1.25, 1, 1], gap="small")
+        a.html(c.coach_block(svc.coach_events()))
+        b.html(c.race_control_block(svc.race_control.entries))
+        d.html(c.strategy_block(svc.strategy_view()))
+        a, b, d = st.columns([1.25, 1, 1], gap="small")
+        a.html(c.car_block(snap))
+        b.html(c.weather_block(snap))
+        d.html(_stats(svc))
 
     @st.fragment(run_every=max(1.0, refresh * 4))
     def summary():
-        _stats(svc)
         _diagnostics(svc)
 
     readouts()
@@ -102,27 +109,41 @@ def render() -> None:
     summary()
 
 
-def _stats(svc) -> None:
+def _stats(svc) -> str:
     s = svc.stats.summary()
     laps = svc.laps_view()
-    done = laps["laps"]
-    cols = st.columns(6)
-    cols[0].metric("Laps completed", len(done), help="Laps whose lap time the game has reported this session")
     cons = laps["consistency_s"]
-    cols[1].metric("Consistency", f"±{cons:.3f} s" if cons is not None else "—",
-                   help="Standard deviation of your valid lap times this session (needs 3 or more laps). "
-                        "Lower means more consistent.")
-    cols[2].metric("Peak speed", f'{s["peak_speed_kph"]} km/h' if s else "—")
-    cols[3].metric("Mean sampled speed", f'{s["mean_speed_kph"]:.0f} km/h' if s else "—",
-                   help="Arithmetic mean of every received speed sample this session (fixed-rate sampling)")
-    cols[4].metric("Full throttle / braking", f'{s["full_throttle_pct"]:.0f}% / {s["braking_pct"]:.0f}%' if s else "—",
-                   help="Share of samples with throttle ≥ 98% / brake ≥ 5%. Measured from received telemetry.")
-    cols[5].metric("Session time", c.fmt_duration(s["duration_s"]) if s else "—",
-                   help="Wall-clock time since the first sample of this session")
+    rows = [("Laps completed", str(len(laps["laps"]))),
+            ("Consistency, spread of valid laps", f"±{cons:.3f} s" if cons is not None else c.NA),
+            ("Peak speed", f'{s["peak_speed_kph"]} km/h' if s else c.NA),
+            ("Mean sampled speed", f'{s["mean_speed_kph"]:.0f} km/h' if s else c.NA),
+            ("Full throttle", f'{s["full_throttle_pct"]:.0f}% of samples' if s else c.NA),
+            ("Braking", f'{s["braking_pct"]:.0f}% of samples' if s else c.NA),
+            ("Session time", c.fmt_duration(s["duration_s"]) if s else c.NA)]
+    body = "".join(f'<div class="ps-row"><span>{k}</span><b>{v}</b></div>' for k, v in rows)
+    return ('<div class="ps-panel fill"><div class="ps-title"><b>This session</b><span>from received telemetry</span>'
+            f'</div>{body}</div>')
 
 
 def _diagnostics(svc) -> None:
-    with st.expander("Diagnostics", expanded=False):
+    with st.expander("Diagnostics and packet capture", expanded=svc.capture is not None):
+        cap = svc.capture
+        if cap is not None:
+            a, b = st.columns([1, 3])
+            a.button("Stop capture", key="stop_capture", on_click=svc.stop_capture, type="primary")
+            b.markdown(f"Capturing every packet to `{cap.path}`: **{cap.count:,}** so far, "
+                       f"{cap.size_bytes / 1e6:.1f} MB."
+                       + (" Stopped at the size limit: stop it and start a new capture to go on." if cap.full else ""))
+        else:
+            a, b = st.columns([1, 3])
+            a.button("Capture raw packets", key="start_capture", on_click=svc.start_capture,
+                     disabled=svc.mode != "live",
+                     help="Saves exactly what the game sends to data/captures, for checking PurpleSector against "
+                          "a real session.")
+            b.caption("Drive a few laps with capture on, then stop it. `report FILE` summarises the file and "
+                      "`replay FILE` plays it back into the app: `scripts\\diagnostics.py report FILE` from source, "
+                      "or `PurpleSector.exe report FILE`." if svc.mode == "live" else
+                      "Packet capture records the live game; switch to Live to use it.")
         d = svc.monitor.diagnostics()
         w = svc.writer
         left, mid, right = st.columns(3)
@@ -155,9 +176,9 @@ def sidebar() -> None:
     s = svc.settings
     with st.sidebar:
         st.html(f'<div class="ps-brand" style="font-size:1.4rem">{c.BRAND}</div>'
-                '<div class="ps-meta">F1 22 telemetry and race engineer</div>')
+                '<div class="ps-meta">Telemetry and race engineer for F1 22 to F1 25</div>')
         mode = st.segmented_control("Telemetry source", ["live", "demo"], default=svc.mode, required=True,
-                                    format_func={"live": "Live (F1 22)", "demo": "Demo"}.get)
+                                    format_func={"live": "Live game", "demo": "Demo"}.get)
         if mode and mode != svc.mode:
             svc.update_settings(mode=mode)
             st.rerun()
@@ -193,7 +214,7 @@ def sidebar() -> None:
                             else "Assign a wheel button under Settings → Radio on request.")):
             svc.radio_check()
         if st.button("Open overlay", width="stretch", disabled=svc.overlay_server is None,
-                     help="Small always-on-top window with delta, gear, gaps and the last call. Needs F1 22 in "
+                     help="Small always-on-top window with delta, gear, gaps and the last call. Needs the game in "
                           "borderless or windowed mode. Drag to move, right-click to close."
                      if svc.overlay_server else f"Overlay endpoint unavailable: port {s.overlay_port} is in use."):
             _open_overlay(s.overlay_port)
@@ -216,6 +237,8 @@ def _open_overlay(port: int) -> None:
         st.toast("The overlay is already open. Right-click it to close it.")
         return
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console window behind the overlay on Windows
-    _overlay_proc = subprocess.Popen([sys.executable, str(PROJECT_ROOT / "overlay.py"), "--port", str(port)],
+    # packaged, the exe itself runs the overlay; from source, overlay.py
+    cmd = [sys.executable, "--overlay"] if FROZEN else [sys.executable, str(PROJECT_ROOT / "overlay.py")]
+    _overlay_proc = subprocess.Popen([*cmd, "--port", str(port)],
                                      creationflags=flags)
     st.toast("Overlay opened. Drag it into place; right-click it to close.")

@@ -89,3 +89,31 @@ def test_sector_deltas_from_game_timing():
 def test_too_few_samples():
     df, ms = make_lap()
     assert not compare_laps(df.head(20), df).conclusive
+
+
+def test_coasting_difference_is_observed():
+    ref, ms = make_lap()
+    lap, _ = make_lap()
+    coast = (lap.lap_distance >= 1610) & (lap.lap_distance < 1650)  # 40 m off both pedals
+    lap.loc[coast, "throttle"] = 0.0
+    cmp = compare_laps(lap, ref, lap_time_ms=ms, ref_time_ms=ms)
+    seg = next(s for s in cmp.segments if s.start_m <= 1620 < s.end_m)
+    assert seg.coast_diff_m == pytest.approx(40, abs=6)
+    assert "Coasted 40 m more than reference" in seg.observations()
+    assert all(s.coast_diff_m == 0 for s in cmp.segments if not s.start_m <= 1620 < s.end_m)
+
+
+def test_lap_stats_coasting_and_braking_while_steering():
+    from analysis.statistics import lap_input_stats
+    df, _ = make_lap(brake_at=(1000, 1100))
+    df.loc[(df.lap_distance >= 2000) & (df.lap_distance < 2300), "throttle"] = 0.0  # 300 of 3000 m coasting
+    df.loc[(df.lap_distance >= 1050) & (df.lap_distance < 1100), "steer"] = 0.3     # half the braking turning
+    s = lap_input_stats(df)
+    assert s["coasting_pct"] == pytest.approx(10, abs=0.5)
+    assert s["brake_steer_pct"] == pytest.approx(50, abs=2)
+
+
+def test_lap_stats_without_braking_have_no_brake_steer_share():
+    from analysis.statistics import lap_input_stats
+    df, _ = make_lap()
+    assert lap_input_stats(df)["brake_steer_pct"] is None and lap_input_stats(df)["coasting_pct"] == 0

@@ -34,7 +34,7 @@ def test_receiver_decodes_and_counts():
     try:
         assert mon.state() == ConnectionState.WAITING  # socket open is not "connected"
         _send(port, pb.build_packet(pb.header(PacketId.CAR_TELEMETRY, frame=1), CarTelemetryData(speed=200)),
-              b"\x00\x01garbage", pb.build_packet(pb.header(PacketId.CAR_SETUPS)),
+              b"\x00\x01garbage", pb.build_packet(pb.header(PacketId.LOBBY_INFO)),
               pb.build_packet(pb.header(PacketId.LAP_DATA, frame=1), LapData(current_lap_num=2)))
         assert wait_until(lambda: mon.packets_total == 4)
         assert mon.state() == ConnectionState.CONNECTED

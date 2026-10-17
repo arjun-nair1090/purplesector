@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" role="img" aria-labelledby="t d">
 <title id="t">PurpleSector</title>
-<desc id="d">PurpleSector: live F1 22 telemetry and an offline race engineer. A car laps the Demo Ring track map with its detected corners while the live delta changes.</desc>
+<desc id="d">PurpleSector: live F1 telemetry and an offline race engineer. A car laps the Demo Ring track map with its detected corners while the live delta changes.</desc>
 <defs><clipPath id="card"><rect width="1280" height="460" rx="18"/></clipPath>
 <radialGradient id="glow" cx="78%" cy="45%" r="45%"><stop offset="0" stop-color="#A66CFF" stop-opacity=".16"/><stop offset="1" stop-color="#A66CFF" stop-opacity="0"/></radialGradient></defs>
 <g clip-path="url(#card)">

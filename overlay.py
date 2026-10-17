@@ -5,7 +5,7 @@ Two halves in one file:
 - main(): a small borderless tkinter window that polls it. Run `python overlay.py`
   (or press "Open overlay" in the sidebar). Drag it anywhere; right-click to close.
 
-Windows only draws it over F1 22 when the game runs in borderless or windowed mode;
+Windows only draws it over the game when it runs in borderless or windowed mode;
 exclusive fullscreen covers every other window.
 """
 from __future__ import annotations
@@ -66,7 +66,7 @@ def serve(port: int, payload) -> ThreadingHTTPServer | None:
 
 # ---------------- window ----------------
 
-GREEN, RED, TEXT, MUTED, PURPLE, BG = "#39D98A", "#FF5C5C", "#E9ECF2", "#8D94A3", "#A66CFF", "#171A21"
+GREEN, RED, TEXT, MUTED, PURPLE, BG = "#2BD47D", "#FF4F4F", "#ECEEF2", "#A3AAB7", "#A66CFF", "#0A0B0E"  # pit-board black
 FONT = "Bahnschrift"
 
 

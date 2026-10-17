@@ -1,11 +1,15 @@
 """PurpleSector diagnostics. Run from the project root:
 
     .venv\\Scripts\\python scripts\\diagnostics.py check            # environment, port, voice, database
-    .venv\\Scripts\\python scripts\\diagnostics.py listen [-s 15]   # print what F1 22 is sending (app must be closed)
+    .venv\\Scripts\\python scripts\\diagnostics.py listen [-s 15]   # print what the game is sending (app must be closed)
     .venv\\Scripts\\python scripts\\diagnostics.py send [-s 30]     # send synthetic loopback packets to the app
+    .venv\\Scripts\\python scripts\\diagnostics.py report FILE      # summarise a packet capture offline
+    .venv\\Scripts\\python scripts\\diagnostics.py replay FILE [-x 2]  # resend a capture to the app at its pace
 
 `send` encodes demo-simulator frames into real F1 22-format UDP packets. The app
 recognises their session id, labels them "synthetic loopback test" and never records them.
+Captures (data/captures/*.pscap.gz) are recorded from the Live page's Diagnostics panel
+while you drive. A replayed capture is a real game session, so the app records it like one.
 """
 from __future__ import annotations
 
@@ -64,7 +68,7 @@ def listen(settings, seconds: float) -> int:
         print(f"Cannot bind {settings.udp_host}:{settings.udp_port}: {exc.strerror}. Close PurpleSector first.")
         return 1
     sock.settimeout(0.5)
-    types, bad, formats = Counter(), Counter(), Counter()
+    types, bad, formats, years = Counter(), Counter(), Counter(), Counter()
     last = None
     end = time.monotonic() + seconds
     print(f"Listening on {settings.udp_host}:{settings.udp_port} for {seconds:.0f} s ...")
@@ -76,6 +80,7 @@ def listen(settings, seconds: float) -> int:
         try:
             p = decode_packet(data)
             types[p.packet_id.name] += 1
+            years[p.header.packet_format] += 1
             if p.packet_id == PacketId.CAR_TELEMETRY:
                 last = p
         except UnsupportedFormatError as exc:
@@ -84,11 +89,12 @@ def listen(settings, seconds: float) -> int:
             bad[type(exc).__name__] += 1
     sock.close()
     if not (types or bad or formats):
-        print("No packets received. Check F1 22: UDP Telemetry On, IP/port as above, and that you are on track.")
+        print("No packets received. Check the game: UDP Telemetry On, IP/port as above, and that you are on track.")
         return 1
     print("Decoded packet types:", dict(types))
+    print("UDP format:", ", ".join(f"{y} ({n} packets)" for y, n in sorted(years.items())))
     if formats:
-        print("Wrong UDP format received:", dict(formats), "-> set UDP Format to 2022 in F1 22")
+        print("Unsupported UDP format received:", dict(formats), "-> set UDP Format to 2022, 2023, 2024 or 2025")
     if bad:
         print("Rejected:", dict(bad))
     if last:
@@ -106,16 +112,7 @@ def send(settings, seconds: float) -> int:
     sent, start = 0, time.perf_counter()
     for frame in range(int(seconds * 60)):
         for p in sim.step():
-            if p.packet_id == PacketId.SESSION:
-                raw = pb.build_session(p.header, p.data)
-            elif p.packet_id == PacketId.EVENT:
-                raw = pb.build_event(p.header, p.data.code)
-            elif p.cars is not None:  # lap data, motion, participants: every car, as the game sends them
-                prefix = bytes([p.num_active_cars or 0]) if p.packet_id == PacketId.PARTICIPANTS else b""
-                raw = pb.build_cars(p.header, dict(enumerate(p.cars)), prefix=prefix)
-            else:
-                raw = pb.build_packet(p.header, p.data)
-            sock.sendto(raw, target)
+            sock.sendto(pb.encode(p), target)
             sent += 1
         time.sleep(max(0.0, start + (frame + 1) / 60 - time.perf_counter()))
     sock.close()
@@ -123,16 +120,56 @@ def send(settings, seconds: float) -> int:
     return 0
 
 
+def report_cmd(path: Path) -> int:
+    from telemetry.capture import report
+    r = report(path)
+    print(f"{path.name}: {r['valid']} valid packets over {r['duration_s']:.0f} s of game time, "
+          f"{r['malformed']} malformed, {r['ignored']} unused")
+    print("UDP format:", r["formats"] or "none", "| unsupported:", r["unsupported"] or "none")
+    print("Sessions:", r["sessions"], "|", ", ".join(r["session_types"]) or "no session packet",
+          "|", ", ".join(r["tracks"]) or "no track")
+    print("Packet types:", dict(sorted(r["packet_types"].items())))
+    for e in r["errors"]:
+        print("  rejected:", e)
+    if not r["laps"]:
+        print("No completed laps.")
+    for lap in r["laps"]:
+        flags = [f for f, on in (("invalid", not lap["valid"]), ("pit", lap["pit"]),
+                                 ("partial data", not lap["samples_complete"])) if on]
+        print(f"  lap {lap['lap']:>3}  {lap['time']:>9}  {lap['samples']:>5} samples  {', '.join(flags)}")
+    return 0 if r["valid"] else 1
+
+
+def replay(settings, path: Path, speed: float) -> int:
+    from telemetry.capture import read_capture
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    target = ("127.0.0.1" if settings.udp_host == "0.0.0.0" else settings.udp_host, settings.udp_port)
+    print(f"Replaying {path.name} to {target[0]}:{target[1]} at {speed:g}x ...")
+    start, sent = time.perf_counter(), 0
+    for t, data in read_capture(path):
+        time.sleep(max(0.0, start + t / speed - time.perf_counter()))
+        sock.sendto(data, target)
+        sent += 1
+    sock.close()
+    print(f"Sent {sent} datagrams.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=("check", "listen", "send"))
+    ap.add_argument("command", choices=("check", "listen", "send", "report", "replay"))
+    ap.add_argument("file", nargs="?", type=Path, help="capture file (report, replay)")
     ap.add_argument("-s", "--seconds", type=float, default=15)
+    ap.add_argument("-x", "--speed", type=float, default=1.0, help="replay speed")
     args = ap.parse_args()
     settings, errors = load_settings()
     for k, v in errors.items():
         print(f"[settings] {k}: {v}")
+    if args.command in ("report", "replay") and (args.file is None or not args.file.exists()):
+        ap.error(f"{args.command} needs an existing capture file")
     return {"check": lambda: check(settings), "listen": lambda: listen(settings, args.seconds),
-            "send": lambda: send(settings, args.seconds)}[args.command]()
+            "send": lambda: send(settings, args.seconds), "report": lambda: report_cmd(args.file),
+            "replay": lambda: replay(settings, args.file, args.speed)}[args.command]()
 
 
 if __name__ == "__main__":

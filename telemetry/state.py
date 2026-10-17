@@ -28,6 +28,7 @@ WHEELS = ("RL", "RR", "FL", "FR")  # F1 22 wheel-array order
 class Snapshot:
     source: str = "live"                  # "live" (F1 22 UDP) or "demo" (synthetic)
     session_uid: int | None = None
+    game: str | None = None               # "F1 24", from the packet format (live only)
     session_time_s: float | None = None
     # car telemetry
     speed_kph: int | None = None
@@ -66,6 +67,9 @@ class Snapshot:
     track_length_m: int | None = None
     total_laps: int | None = None
     weather: str | None = None
+    weather_code: int | None = None
+    forecast: tuple = ()                  # game's forecast for this session, nearest first
+    forecast_accuracy: int | None = None  # 0 perfect, 1 approximate
     track_temp_c: int | None = None
     air_temp_c: int | None = None
     game_paused: bool | None = None
@@ -95,6 +99,7 @@ class Snapshot:
     # participants / history
     player_name: str | None = None
     best_lap_ms_game: int | None = None   # from the game's session-history packet
+    setup: dict | None = None             # player's car setup (car-setups packet), field -> value
     updated_at: dict = field(default_factory=dict)  # packet name -> time.time()
 
 
@@ -133,6 +138,8 @@ class TelemetryState:
         with self._lock:
             s = self._snap
             s.session_uid = packet.header.session_uid
+            if s.source == "live":
+                s.game = f"F1 {packet.header.packet_format % 100}"
             s.session_time_s = packet.header.session_time
             s.updated_at[packet.packet_id.name] = time.time()
             pid = packet.packet_id
@@ -168,13 +175,17 @@ class TelemetryState:
                 s.driver_status = d.driver_status
                 s.penalties_s = d.penalties
             elif pid == PacketId.SESSION:
-                s.session_type = SESSION_TYPES.get(d.session_type, f"Type {d.session_type}")
+                s.session_type = d.session_type_name or SESSION_TYPES.get(d.session_type, f"Type {d.session_type}")
                 s.track_id = d.track_id
                 if s.source == "live":
                     s.track_name = TRACKS.get(d.track_id, "Unknown track")
                 s.track_length_m = d.track_length or None
                 s.total_laps = d.total_laps or None
                 s.weather = WEATHER.get(d.weather)
+                s.weather_code = d.weather
+                s.forecast = tuple(sorted((f for f in d.forecast if f.session_type == d.session_type),
+                                          key=lambda f: f.time_offset_min))
+                s.forecast_accuracy = d.forecast_accuracy
                 s.track_temp_c = d.track_temperature
                 s.air_temp_c = d.air_temperature
                 s.game_paused = bool(d.game_paused)
@@ -188,7 +199,8 @@ class TelemetryState:
                 s.fuel_laps_remaining = round(d.fuel_remaining_laps, 2)
                 s.max_rpm = d.max_rpm or None
                 s.drs_allowed = bool(d.drs_allowed)
-                s.tyre_compound = ACTUAL_COMPOUNDS.get(d.actual_tyre_compound)
+                c = d.actual_tyre_compound  # a code newer than our table is named, not dropped
+                s.tyre_compound = ACTUAL_COMPOUNDS.get(c, f"Compound {c}") if c else None
                 s.tyre_visual = VISUAL_COMPOUNDS.get(d.visual_tyre_compound)
                 s.tyre_age_laps = d.tyres_age_laps
                 s.ers_store_mj = round(d.ers_store_energy / 1e6, 2)
@@ -201,6 +213,9 @@ class TelemetryState:
                 s.sidepod_damage_pct = d.sidepod_damage
                 s.gearbox_damage_pct = d.gear_box_damage
                 s.engine_damage_pct = d.engine_damage
+            elif pid == PacketId.CAR_SETUPS:
+                s.setup = {f: round(v, 3) if isinstance(v, float) else v
+                           for f in d.__dataclass_fields__ if (v := getattr(d, f)) is not None}
             elif pid == PacketId.PARTICIPANTS:
                 s.player_name = d.name.split(b"\0", 1)[0].decode("utf-8", "replace") or None
             elif pid == PacketId.SESSION_HISTORY:

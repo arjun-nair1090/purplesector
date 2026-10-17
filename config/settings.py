@@ -17,7 +17,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-from config.defaults import ENV_FILE, ENV_PREFIX, PROJECT_ROOT, SETTINGS_PATH, SUPPORTED_PACKET_FORMATS
+from config.defaults import APP_HOME, ENV_FILE, ENV_PREFIX, SETTINGS_PATH
 
 VERBOSITY = ("quiet", "normal", "detailed")
 CONFIDENCE = ("low", "medium", "high")
@@ -29,7 +29,6 @@ DEMO_SCENARIOS = ("standard", "quick_lap", "interruption")
 class Settings:
     udp_host: str = "127.0.0.1"
     udp_port: int = 20777
-    telemetry_format: int = 2022
     mode: str = "live"
     voice_enabled: bool = True
     voice_rate: int = 0                # SAPI rate, -10 (slow) .. 10 (fast)
@@ -48,13 +47,15 @@ class Settings:
     data_dir: str = "data"
     demo_scenario: str = "standard"
     demo_speed: float = 1.0
-    radio_button: int = 0              # F1 22 "UDP Action" button (1..12) that asks for a status call; 0 = off
+    radio_button: int = 0              # the game's "UDP Action" button (1..12) that asks for a status call; 0 = off
     overlay_port: int = 8777           # localhost endpoint the always-on-top overlay reads
+    corner_calls: bool = True          # a call after each corner that lost time to the delta reference
+    corner_loss_threshold_s: float = 0.15
 
     @property
     def data_path(self) -> Path:
         p = Path(self.data_dir).expanduser()
-        return p if p.is_absolute() else PROJECT_ROOT / p
+        return p if p.is_absolute() else APP_HOME / p
 
     def validate(self) -> dict[str, str]:
         """Return {field: human-readable problem}; empty when valid."""
@@ -64,9 +65,7 @@ class Settings:
         except ValueError:
             e["udp_host"] = f"'{self.udp_host}' is not an IPv4 address (use 127.0.0.1 for the same PC)."
         if not 1024 <= self.udp_port <= 65535:
-            e["udp_port"] = "Port must be between 1024 and 65535 (F1 22 default: 20777)."
-        if self.telemetry_format not in SUPPORTED_PACKET_FORMATS:
-            e["telemetry_format"] = "Only the 2022 UDP format is supported. Set UDP Format to 2022 in F1 22."
+            e["udp_port"] = "Port must be between 1024 and 65535 (the game's default: 20777)."
         _choice(e, "mode", self.mode, MODES)
         _choice(e, "coach_verbosity", self.coach_verbosity, VERBOSITY)
         _choice(e, "coach_min_confidence", self.coach_min_confidence, CONFIDENCE)
@@ -82,6 +81,7 @@ class Settings:
         _range(e, "ui_refresh_ms", self.ui_refresh_ms, 100, 2000)
         _range(e, "demo_speed", self.demo_speed, 0.25, 8)
         _range(e, "radio_button", self.radio_button, 0, 12)
+        _range(e, "corner_loss_threshold_s", self.corner_loss_threshold_s, 0.02, 5)
         if not 1024 <= self.overlay_port <= 65535:
             e["overlay_port"] = "Port must be between 1024 and 65535."
         elif self.overlay_port == self.udp_port:

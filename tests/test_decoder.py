@@ -221,7 +221,7 @@ def test_rejects_short_header_and_unknown_id():
 
 
 def test_unused_packet_types_are_ignored_not_decoded():
-    for pid in (PacketId.CAR_SETUPS, PacketId.FINAL_CLASSIFICATION, PacketId.LOBBY_INFO):
+    for pid in (PacketId.FINAL_CLASSIFICATION, PacketId.LOBBY_INFO):
         with pytest.raises(IgnoredPacketError):
             decode_packet(pb.build_packet(pb.header(pid)))
 

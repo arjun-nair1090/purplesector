@@ -1,28 +1,26 @@
-"""Validating decoder for F1 22 (format 2022) UDP packets.
+"""Validating decoder for the F1 22, F1 23, F1 24 and F1 25 UDP formats (2022 .. 2025).
 
-Every packet is checked for: minimum header length, packet format, known packet id,
-full spec length for its id, and a valid player-car index. Anything else raises a
-PacketError subclass so the receiver can count it without treating it as telemetry.
+Every packet is checked for: minimum header length, a supported packet format, a known
+packet id for that year, the full spec length for its id, and a valid player-car index.
+Anything else raises a PacketError subclass so the receiver can count it without
+treating it as telemetry. Each year's layouts live in telemetry/formats.py; every year
+decodes into the same records.
 """
 from __future__ import annotations
 
 from dataclasses import replace
 
+from telemetry.formats import FORMATS, SUPPORTED_FORMATS, Format
 from telemetry.packet_models import (
+    EVENT_DETAILS,
     HISTORY_MAX_LAPS,
     MAX_CARS,
-    PACKET_SIZES,
-    SESSION_HISTORY_LAPS_OFFSET,
-    SESSION_PIT_WINDOW_OFFSET,
-    SESSION_SAFETY_CAR_OFFSET,
-    ButtonDetails,
     CarDamageData,
     CarMotionData,
+    CarSetupData,
     CarStatusData,
     CarTelemetryData,
     EventData,
-    FastestLapDetails,
-    FlashbackDetails,
     LapData,
     LapHistoryData,
     Packet,
@@ -32,11 +30,11 @@ from telemetry.packet_models import (
     SessionData,
     SessionHistory,
     SessionHistoryHeader,
-    record_struct,
+    WeatherForecastSample,
     unpack_record,
 )
 
-HEADER_SIZE = record_struct(PacketHeader).size  # 24
+HEADER_SIZE = FORMATS[2022].header_size  # 24; F1 23 on: 29
 
 
 class PacketError(Exception):
@@ -54,73 +52,80 @@ class UnsupportedFormatError(PacketError):
 
 
 class IgnoredPacketError(PacketError):
-    """Valid F1 22 packet type that PurpleSector does not use (setups, lobby info, ...)."""
+    """Valid packet type that PurpleSector does not use (lobby info, tyre sets, ...)."""
 
 
 class MalformedPacketError(PacketError):
     pass
 
 
+def _format_of(data: bytes) -> int:
+    if len(data) < 2:
+        raise TruncatedPacketError(f"{len(data)} bytes is shorter than a packet header")
+    return int.from_bytes(data[:2], "little")
+
+
 def decode_header(data: bytes) -> PacketHeader:
-    if len(data) < HEADER_SIZE:
-        raise TruncatedPacketError(f"{len(data)} bytes is shorter than the {HEADER_SIZE}-byte header")
-    return unpack_record(PacketHeader, data)
+    f = FORMATS.get(_format_of(data), FORMATS[2022])
+    if len(data) < f.header_size:
+        raise TruncatedPacketError(f"{len(data)} bytes is shorter than the {f.header_size}-byte header")
+    return f.header.unpack(data)
 
 
-def _player_record(cls, data: bytes, header: PacketHeader, prefix: int = 0):
+def _player(cls, data: bytes, f: Format, header: PacketHeader, prefix: int = 0):
     """Decode only the player's entry of a 22-car array that starts `prefix` bytes after the header."""
-    idx = header.player_car_index
-    if idx >= MAX_CARS:
-        raise MalformedPacketError(f"player car index {idx} out of range")
-    return unpack_record(cls, data, HEADER_SIZE + prefix + idx * record_struct(cls).size)
+    lay = f.layouts[cls]
+    return lay.unpack(data, f.header_size + prefix + header.player_car_index * lay.size)
 
 
-def _all_cars(cls, data: bytes, prefix: int = 0) -> tuple:
-    size = record_struct(cls).size
-    return tuple(unpack_record(cls, data, HEADER_SIZE + prefix + i * size) for i in range(MAX_CARS))
+def _all_cars(cls, data: bytes, f: Format, prefix: int = 0) -> tuple:
+    lay = f.layouts[cls]
+    start = f.header_size + prefix
+    return tuple(lay.unpack(data, start + i * lay.size) for i in range(MAX_CARS))
 
 
-def _session(data: bytes, header: PacketHeader) -> SessionData:
-    s = unpack_record(SessionData, data, HEADER_SIZE)
-    o = SESSION_PIT_WINDOW_OFFSET
-    return replace(s, safety_car_status=data[SESSION_SAFETY_CAR_OFFSET], pit_window_ideal_lap=data[o],
-                   pit_window_latest_lap=data[o + 1], pit_rejoin_position=data[o + 2])
+def _session(data: bytes, f: Format, header) -> SessionData:
+    s = f.layouts[SessionData].unpack(data, f.header_size)
+    sc, fo, pit = f.session_safety_car_offset, f.session_forecast_offset, f.session_pit_window_offset
+    lay = f.layouts[WeatherForecastSample]
+    n = min(data[sc + 2], f.forecast_slots)
+    forecast = tuple(lay.unpack(data, fo + i * lay.size) for i in range(n))
+    return replace(s, safety_car_status=data[sc], pit_window_ideal_lap=data[pit], pit_window_latest_lap=data[pit + 1],
+                   pit_rejoin_position=data[pit + 2], forecast=forecast, forecast_accuracy=data[pit - 14],
+                   session_type_name=f.session_types.get(s.session_type, f"Session type {s.session_type}"))
 
 
-def _event(data: bytes, header: PacketHeader) -> EventData:
-    raw = data[HEADER_SIZE:HEADER_SIZE + 4]
+def _event(data: bytes, f: Format, header) -> EventData:
+    o = f.header_size
+    raw = data[o:o + 4]
     try:
         code = raw.decode("ascii")
     except UnicodeDecodeError:
         raise MalformedPacketError(f"non-ASCII event code {raw!r}") from None
     if not code.isalnum():
         raise MalformedPacketError(f"invalid event code {code!r}")
-    details = None
-    if code == "FTLP":
-        details = unpack_record(FastestLapDetails, data, HEADER_SIZE + 4)
-    elif code == "FLBK":
-        details = unpack_record(FlashbackDetails, data, HEADER_SIZE + 4)
-    elif code == "BUTN":
-        details = unpack_record(ButtonDetails, data, HEADER_SIZE + 4)
-    return EventData(code, details)
+    cls = EVENT_DETAILS.get(code)  # event details have one layout in every year
+    return EventData(code, unpack_record(cls, data, o + 4) if cls else None)
 
 
-def _history(data: bytes, header: PacketHeader) -> SessionHistory:
-    h = unpack_record(SessionHistoryHeader, data, HEADER_SIZE)
+def _history(data: bytes, f: Format, header) -> SessionHistory:
+    o = f.header_size
+    h = f.layouts[SessionHistoryHeader].unpack(data, o)
     if h.car_idx >= MAX_CARS:
         raise MalformedPacketError(f"history car index {h.car_idx} out of range")
-    size = record_struct(LapHistoryData).size
+    lay = f.layouts[LapHistoryData]
     n = min(h.num_laps, HISTORY_MAX_LAPS)
-    laps = tuple(unpack_record(LapHistoryData, data, SESSION_HISTORY_LAPS_OFFSET + i * size) for i in range(n))
+    laps = tuple(lay.unpack(data, o + 7 + i * lay.size) for i in range(n))
     return SessionHistory(h, laps)
 
 
 _DECODERS = {
     PacketId.SESSION: _session,
     PacketId.EVENT: _event,
-    PacketId.CAR_TELEMETRY: lambda d, h: _player_record(CarTelemetryData, d, h),
-    PacketId.CAR_STATUS: lambda d, h: _player_record(CarStatusData, d, h),
-    PacketId.CAR_DAMAGE: lambda d, h: _player_record(CarDamageData, d, h),
+    PacketId.CAR_TELEMETRY: lambda d, f, h: _player(CarTelemetryData, d, f, h),
+    PacketId.CAR_STATUS: lambda d, f, h: _player(CarStatusData, d, f, h),
+    PacketId.CAR_DAMAGE: lambda d, f, h: _player(CarDamageData, d, f, h),
+    PacketId.CAR_SETUPS: lambda d, f, h: _player(CarSetupData, d, f, h),
     PacketId.SESSION_HISTORY: _history,
 }
 
@@ -130,27 +135,32 @@ _ALL_CARS = {
     PacketId.MOTION: (CarMotionData, 0),
     PacketId.PARTICIPANTS: (ParticipantData, 1),  # after m_numActiveCars
 }
+_NO_PLAYER = (PacketId.SESSION, PacketId.EVENT, PacketId.SESSION_HISTORY)  # nothing indexed by the player car
 
 
-def decode_packet(data: bytes, supported_formats: tuple[int, ...] = (2022,)) -> Packet:
+def decode_packet(data: bytes, supported_formats: tuple[int, ...] = SUPPORTED_FORMATS) -> Packet:
+    fmt = _format_of(data)
+    if fmt not in supported_formats or fmt not in FORMATS:
+        if len(data) < HEADER_SIZE:
+            raise TruncatedPacketError(f"{len(data)} bytes is shorter than a packet header")
+        raise UnsupportedFormatError(fmt)
+    f = FORMATS[fmt]
     header = decode_header(data)
-    if header.packet_format not in supported_formats:
-        raise UnsupportedFormatError(header.packet_format)
     try:
         pid = PacketId(header.packet_id)
-    except ValueError:
-        raise MalformedPacketError(f"unknown packet id {header.packet_id}") from None
-    expected = PACKET_SIZES[pid]
+        expected = f.sizes[pid]
+    except (ValueError, KeyError):
+        raise MalformedPacketError(f"unknown packet id {header.packet_id} for format {fmt}") from None
     if len(data) < expected:
         raise TruncatedPacketError(f"{pid.name} packet is {len(data)} bytes, expected {expected}")
-    if pid in _ALL_CARS:
-        if header.player_car_index >= MAX_CARS:
-            raise MalformedPacketError(f"player car index {header.player_car_index} out of range")
-        cls, prefix = _ALL_CARS[pid]
-        cars = _all_cars(cls, data, prefix)
-        n = data[HEADER_SIZE] if pid == PacketId.PARTICIPANTS else None
-        return Packet(header, pid, cars[header.player_car_index], cars, n)
     decoder = _DECODERS.get(pid)
-    if decoder is None:
+    if decoder is None and pid not in _ALL_CARS:
         raise IgnoredPacketError(pid.name)
-    return Packet(header, pid, decoder(data, header))
+    if pid not in _NO_PLAYER and header.player_car_index >= MAX_CARS:
+        raise MalformedPacketError(f"player car index {header.player_car_index} out of range")
+    if pid in _ALL_CARS:
+        cls, prefix = _ALL_CARS[pid]
+        cars = _all_cars(cls, data, f, prefix)
+        n = data[f.header_size] if pid == PacketId.PARTICIPANTS else None
+        return Packet(header, pid, cars[header.player_car_index], cars, n)
+    return Packet(header, pid, decoder(data, f, header))

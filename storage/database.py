@@ -67,6 +67,20 @@ MIGRATIONS: dict[int, str] = {
     ALTER TABLE sessions ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN driver_name TEXT;
     """,
+    # v3: car setup and tyre at each line crossing, race control messages
+    3: """
+    ALTER TABLE laps ADD COLUMN setup_json TEXT;
+    ALTER TABLE laps ADD COLUMN tyre_age_laps INTEGER;
+    ALTER TABLE laps ADD COLUMN tyre_compound TEXT;
+    CREATE TABLE IF NOT EXISTS events (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        session_time REAL NOT NULL,
+        lap_number INTEGER,
+        code TEXT NOT NULL,
+        message TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS events_by_session ON events (session_id);
+    """,
 }
 
 

@@ -16,29 +16,44 @@ import logging
 import threading
 import uuid
 from dataclasses import asdict
+from datetime import datetime
+from pathlib import Path
 
 import overlay
 from analysis.coach import Category, Coach, CoachConfig, Priority, radio_report
+from analysis.corner_feedback import CornerCoach
+from analysis.field import FieldTiming
 from analysis.gaps import RACE_SESSIONS, GapTracker
 from analysis.lap_comparison import delta_at, reference_curve, samples_frame
 from analysis.lap_tracker import LapEventKind, LapTracker
+from analysis.race_control import RaceControl
 from analysis.statistics import SessionStats, consistency_s, theoretical_best_ms
 from analysis.strategy import LapResources, projection
 from analysis.track_map import TrackMap
+from analysis.weather import WeatherWatch
 from config.settings import Settings, load_settings, save_settings, setup_logging
 from demo.simulator import LOOPBACK_TRACK_NAME, DemoRunner, is_synthetic_uid
 from demo.simulator import TRACK_NAME as DEMO_TRACK_NAME
 from storage.database import init_db
 from storage.session_repository import SessionRepository
 from storage.telemetry_writer import TelemetryWriter
+from telemetry.capture import CaptureWriter
 from telemetry.connection import ConnectionMonitor, ConnectionState
-from telemetry.packet_models import EVENT_CODES, PIT_STATUS, RESULT_ACTIVE, Packet, PacketId, udp_action_bit
+from telemetry.packet_models import (
+    EVENT_CODES,
+    PIT_STATUS,
+    RESULT_ACTIVE,
+    RESULT_FINISHED,
+    Packet,
+    PacketId,
+    udp_action_bit,
+)
 from telemetry.receiver import UdpReceiver
 from telemetry.state import TelemetryState
 from voice.speaker import VoiceCoach, default_engine_factory
 
 log = logging.getLogger(__name__)
-RESTART_RECEIVER = ("udp_host", "udp_port", "telemetry_format")
+RESTART_RECEIVER = ("udp_host", "udp_port")
 
 
 class AppService:
@@ -53,6 +68,10 @@ class AppService:
         self.stats = SessionStats()
         self.gaps = GapTracker()
         self.resources = LapResources()
+        self.weather = WeatherWatch()
+        self.race_control = RaceControl()
+        self.field = FieldTiming()
+        self.corners = CornerCoach(settings.corner_loss_threshold_s)
         self.coach = Coach(CoachConfig.from_settings(settings))
         self.voice = VoiceCoach(engine_factory=engine_factory, enabled=settings.voice_enabled,
                                 rate=settings.voice_rate, volume=settings.voice_volume,
@@ -64,6 +83,7 @@ class AppService:
         self.session_uid: int | None = None
         self.loopback_test = False  # synthetic packets over real UDP
         self.overlay_server = None
+        self.capture: CaptureWriter | None = None
         self._radio_n = 0
         self._reset_pace()
         self._reset_race()
@@ -92,6 +112,7 @@ class AppService:
 
     def shutdown(self) -> None:
         self._watchdog_stop.set()
+        self.stop_capture()
         self._stop_source()
         self._end_recording()
         self.writer.stop()
@@ -112,8 +133,8 @@ class AppService:
         self.monitor.reset(self.mode)
         if self.mode == "live":
             s = self.settings
-            self.receiver = UdpReceiver(s.udp_host, s.udp_port, self.monitor, lambda p: self.ingest(p, "live"),
-                                        (s.telemetry_format,))
+            self.receiver = UdpReceiver(s.udp_host, s.udp_port, self.monitor, lambda p: self.ingest(p, "live"))
+            self.receiver.on_datagram = self._capture_datagram
             self.receiver.start()
 
     def _stop_source(self) -> None:
@@ -128,6 +149,29 @@ class AppService:
             if self.mode == "live":
                 self._stop_source()
                 self._start_source()
+
+    # ---------------- raw capture (verifying against a real session) ----------------
+    def start_capture(self) -> Path | None:
+        """Write every datagram from the game to data/captures until stopped. None if already capturing."""
+        with self._lock:
+            if self.capture is not None:
+                return None
+            path = self.settings.data_path / "captures" / f"capture_{datetime.now():%Y%m%d_%H%M%S}.pscap.gz"
+            self.capture = CaptureWriter(path)
+            log.info("Capturing raw packets to %s", path)
+            return path
+
+    def stop_capture(self) -> None:
+        with self._lock:
+            cap, self.capture = self.capture, None
+        if cap is not None:
+            cap.close()
+            log.info("Capture closed: %d datagrams, %s", cap.count, cap.path)
+
+    def _capture_datagram(self, data: bytes) -> None:
+        cap = self.capture
+        if cap is not None:
+            cap.write(data)
 
     # ---------------- demo control ----------------
     def start_demo(self) -> None:
@@ -163,13 +207,18 @@ class AppService:
             if h.session_uid != self.session_uid:
                 self._reset_session(h.session_uid)
             pid = packet.packet_id
-            if self._last_frames.get(pid) == h.frame_identifier and pid != PacketId.EVENT:
+            # session history rotates through the cars, possibly several in one frame: dedupe per car
+            key = (pid, packet.data.header.car_idx) if pid == PacketId.SESSION_HISTORY else pid
+            if self._last_frames.get(key) == h.frame_identifier and pid != PacketId.EVENT:
                 self.monitor.record_duplicate()
                 return
-            self._last_frames[pid] = h.frame_identifier
-            if pid == PacketId.SESSION_HISTORY and packet.data.header.car_idx != h.player_car_index:
-                return  # history packets rotate through all cars
+            self._last_frames[key] = h.frame_identifier
+            if pid == PacketId.SESSION_HISTORY:
+                self._guard("field", self.field.on_history, packet.data)
+                if packet.data.header.car_idx != h.player_car_index:
+                    return  # history packets rotate through all cars; only the player's feeds the state
             self._guard("state", self.state.apply, packet)
+            self._format = h.packet_format
             if pid == PacketId.LAP_DATA:
                 self._player_idx = h.player_car_index
                 if packet.cars:
@@ -182,19 +231,24 @@ class AppService:
             elif pid == PacketId.CAR_TELEMETRY:
                 d = packet.data
                 self._guard("lap tracker", self.tracker.on_telemetry, h.session_time, d)
+                self._guard("corners", self._check_corner)
                 self._guard("stats", self.stats.add, d.speed, d.throttle * 100, d.brake * 100)
             elif pid == PacketId.MOTION:
-                self.tracker.on_motion(packet.data)
+                self._guard("lap tracker", self.tracker.on_motion, packet.data)
                 if packet.cars:
                     self._car_positions = tuple(c.position for c in packet.cars)
             elif pid == PacketId.PARTICIPANTS:
                 if packet.cars:
                     self._guard("gaps", self.gaps.set_names, packet.cars)
+                    self._teams = {i: p.team_id for i, p in enumerate(packet.cars)}
             elif pid == PacketId.SESSION:
                 self._guard("recorder", self._update_recording_meta)
+                self._guard("weather", self._check_weather)
+                self._guard("race control", self._race_control_session, h)
                 self._guard("pace", self._ensure_alltime, self.state.snapshot().track_name)
             elif pid == PacketId.EVENT:
                 self._guard("event", self._on_game_event, packet.data)
+                self._guard("race control", self._race_control_event, packet.data, h)
 
     def _guard(self, name, fn, *args):
         try:
@@ -211,6 +265,7 @@ class AppService:
         if self.mode == "demo" or self.loopback_test:
             self.state.set_track_name(DEMO_TRACK_NAME if self.mode == "demo" else LOOPBACK_TRACK_NAME)
         self.tracker.reset()
+        self.corners.reset()
         self.stats.reset()
         self.coach.reset()
         self._last_frames.clear()
@@ -224,9 +279,11 @@ class AppService:
     # ---------------- pace: live delta and all-time best ----------------
     def _reset_pace(self) -> None:
         self._history_best_ms: int | None = None  # best recorded lap on this track from earlier sessions
-        self._alltime_curve = None   # (lap ms, curve) of the fastest fully recorded earlier lap on this track
-        self._session_curve = None   # (lap ms, curve) of this session's best fully recorded lap
+        self._alltime_curve = None   # (lap ms, curve, samples) of the fastest fully recorded earlier lap here
+        self._session_curve = None   # (lap ms, curve, samples) of this session's best fully recorded lap
         self._ref_curve = None
+        self._ref_frame = None       # samples of the delta reference, for the corner calls
+        self.corners.clear_reference()
         self.delta_ref: str | None = None
         self.delta_s: float | None = None
         self._pace_track: str | None = None
@@ -234,11 +291,16 @@ class AppService:
     def _reset_race(self) -> None:
         self.gaps.reset()
         self.resources.reset()
+        self.weather.reset()
+        self.race_control.reset()
+        self.field.reset()
         self.track_map: TrackMap | None = None
         self.track_map_source: str | None = None
         self._player_idx = 0
         self._lap_cars = None
         self._car_positions = None
+        self._teams: dict[int, int] = {}
+        self._format = 2022
         self._buttons = 0
 
     def _set_track_map(self, df, source: str) -> None:
@@ -248,6 +310,7 @@ class AppService:
             m = TrackMap.from_samples(df)
             if m is not None:
                 self.track_map, self.track_map_source = m, source
+                self._refresh_corner_reference()
 
     def _ensure_alltime(self, track: str | None) -> None:
         """Load the recorded best for this track once per session, off the packet thread."""
@@ -264,7 +327,7 @@ class AppService:
             curve = None
             if ref is not None:
                 c = reference_curve(list(ref[1].itertuples(index=False, name=None)))
-                curve = (ref[0], c) if c is not None else None
+                curve = (ref[0], c, ref[1]) if c is not None else None
         except Exception:
             log.exception("Loading recorded best for %s failed", track)
             return
@@ -280,12 +343,30 @@ class AppService:
     def _pick_reference(self) -> None:
         """Delta reference = the faster of the recorded PB and this session's best (both fully recorded).
         On a tie this session's lap wins, so "PB (recorded)" always means a lap from an earlier session."""
-        options = [(ref[0], rank, ref[1], label) for rank, ref, label in
+        options = [(ref[0], rank, ref[1], ref[2], label) for rank, ref, label in
                    ((0, self._session_curve, "Session best"), (1, self._alltime_curve, "PB (recorded)")) if ref]
         if options:
-            _, _, self._ref_curve, self.delta_ref = min(options, key=lambda o: (o[0], o[1]))
+            _, _, self._ref_curve, self._ref_frame, self.delta_ref = min(options, key=lambda o: (o[0], o[1]))
         else:
-            self._ref_curve = self.delta_ref = None
+            self._ref_curve = self._ref_frame = self.delta_ref = None
+        self._refresh_corner_reference()
+
+    def _refresh_corner_reference(self) -> None:
+        if self._ref_frame is not None and self.track_map is not None and self.track_map.corners:
+            self.corners.set_reference(self.track_map.corners, self._ref_frame, self.delta_ref)
+        else:
+            self.corners.clear_reference()
+
+    def _check_corner(self) -> None:
+        # nothing to learn from a pit or out lap, or behind a safety car
+        if (not self.settings.corner_calls or self.tracker.current_lap_off_pace
+                or self.state.snapshot().safety_car_status in (1, 2)):
+            return
+        r = self.corners.on_progress(self.tracker.current_lap_number, self.tracker.current_samples)
+        if r is not None:
+            e = r.event()
+            if self.coach.accept(e):
+                self._speak([e])
 
     def _update_pace(self, lap) -> None:
         # a pit or out lap would draw the pit lane into the outline
@@ -294,7 +375,7 @@ class AppService:
         if lap is self.tracker.best_lap() and lap.samples_complete:
             c = reference_curve(lap.samples)
             if c is not None:
-                self._session_curve = (lap.lap_time_ms, c)
+                self._session_curve = (lap.lap_time_ms, c, samples_frame(lap.samples))
                 self._pick_reference()
 
     def _on_laps_undone(self, lap_number: int) -> None:
@@ -305,7 +386,7 @@ class AppService:
         self.resources.reset()  # the stored line reading belongs to a lap that no longer happened
         best = self.tracker.best_lap()
         c = reference_curve(best.samples) if best is not None and best.samples_complete else None
-        self._session_curve = (best.lap_time_ms, c) if c is not None else None
+        self._session_curve = (best.lap_time_ms, c, samples_frame(best.samples)) if c is not None else None
         self._pick_reference()
 
     @property
@@ -326,6 +407,7 @@ class AppService:
         if k == LapEventKind.LAP_COMPLETED:
             snap = self.state.snapshot()
             ev.lap.fuel_used_kg, ev.lap.tyre_wear_pct = self.resources.line_crossed(snap.fuel_kg, snap.tyre_wear_pct)
+            ev.lap.tyre_age_laps, ev.lap.tyre_compound, ev.lap.setup = snap.tyre_age_laps, snap.tyre_visual, snap.setup
             self._guard("gaps", self.gaps.on_player_lap, self._player_idx)
             if self.recording_key:
                 self.writer.save_lap(self.recording_key, ev.lap)
@@ -344,6 +426,32 @@ class AppService:
                                           "Pit entry" if entry else "Pit exit", Priority.LOW,
                                           f"Game pit status ({PIT_STATUS[1] if entry else PIT_STATUS[0]})"))
 
+    def _race_control_session(self, h) -> None:
+        snap = self.state.snapshot()
+        self._log_race_control(self.race_control.on_safety_car(snap.safety_car_status, h.session_time,
+                                                               snap.lap_number))
+
+    def _race_control_event(self, ev, h) -> None:
+        lap = self.state.snapshot().lap_number
+        if ev.code == "FTLP" and ev.details is not None and ev.details.vehicle_idx == h.player_car_index                 and self.tracker.laps:
+            lap = self.tracker.laps[-1].lap_number  # your fastest lap is the one just completed
+        self._log_race_control(self.race_control.on_event(ev, session_time=h.session_time, lap=lap,
+                                                          names=self.gaps.names, player=h.player_car_index))
+
+    def _log_race_control(self, entry) -> None:
+        if entry is None:
+            return
+        if self.recording_key:
+            self.writer.add_event(self.recording_key, entry.session_time, entry.lap, entry.code, entry.message)
+        if entry.speech:
+            self._speak(self.coach.simple(f"rc:{entry.code}:{entry.session_time:.1f}", Category.RACE_CONTROL,
+                                          entry.message, Priority.HIGH, f"Game event {entry.code}", entry.speech))
+
+    def _check_weather(self) -> None:
+        snap = self.state.snapshot()
+        self._speak([e for e in self.weather.check(snap.weather_code, snap.forecast, snap.forecast_accuracy)
+                     if self.coach.accept(e)])
+
     def _on_game_event(self, ev) -> None:
         if ev.code == "BUTN" and ev.details is not None:
             held = ev.details.button_status
@@ -351,6 +459,12 @@ class AppService:
             if n and held & udp_action_bit(n) and not self._buttons & udp_action_bit(n):
                 self.radio_check()  # on press, not while held
             self._buttons = held
+            return
+        if ev.code == "FLBK" and ev.details is not None:
+            t = ev.details.flashback_session_time
+            self.race_control.rewind(t)
+            if self.recording_key:
+                self.writer.undo_events_after(self.recording_key, t)
             return
         if ev.code in ("SSTA", "SEND", "CHQF"):
             text = EVENT_CODES[ev.code]
@@ -432,6 +546,7 @@ class AppService:
         with self._lock:
             old, self.settings = self.settings, new
             self.coach.config = CoachConfig.from_settings(new)
+            self.corners.threshold_s = new.corner_loss_threshold_s
             self.voice.configure(enabled=new.voice_enabled, rate=new.voice_rate, volume=new.voice_volume,
                                  min_interval_s=new.voice_min_interval_s)
             if new.history_window_s != old.history_window_s:
@@ -486,7 +601,9 @@ class AppService:
         with self._lock:
             race = self.state.snapshot().session_type in RACE_SESSIONS
             view = self.gaps.view(self._player_idx) if race else {"ahead": None, "behind": None}
-            return {"race": race, **view}
+            cars = (sum(c.result_status in (RESULT_ACTIVE, RESULT_FINISHED) for c in self._lap_cars)
+                    if self._lap_cars else None)
+            return {"race": race, "cars": cars or None, **view}
 
     def strategy_view(self) -> dict:
         with self._lock:
@@ -500,6 +617,15 @@ class AppService:
                     "laps": [lap for lap in laps if lap.fuel_used_kg is not None or lap.tyre_wear_pct is not None][-5:],
                     "pit_ideal": snap.pit_window_ideal_lap, "pit_latest": snap.pit_window_latest_lap,
                     "pit_rejoin": snap.pit_rejoin_position, "lap_number": snap.lap_number}
+
+    def field_view(self) -> dict:
+        """Timing tower and your best sectors against the session's fastest."""
+        with self._lock:
+            race = self.state.snapshot().session_type in RACE_SESSIONS
+            names = self.gaps.names
+            return {"race": race, "tower": self.field.tower(self._lap_cars, names, self._player_idx, race, self.gaps),
+                    "versus": self.field.versus(self._player_idx, names), "teams": dict(self._teams),
+                    "year": self._format}
 
     def map_view(self) -> dict:
         """Outline plus live dots: (u, v, role) for every active car, role in player/ahead/behind/other."""

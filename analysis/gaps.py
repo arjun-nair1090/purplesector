@@ -46,6 +46,10 @@ class GapTracker:
             name = p.name.split(b"\0", 1)[0].decode("utf-8", "replace").strip()
             self._names[i] = name or (f"Car #{p.race_number}" if p.race_number else f"Car {i + 1}")
 
+    @property
+    def names(self) -> dict[int, str]:
+        return dict(self._names)
+
     def on_lap_data(self, session_time: float, cars) -> None:
         if self._now is not None and session_time < self._now:
             self._rewind(session_time)  # flashback: forget everything after the new time

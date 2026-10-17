@@ -1,9 +1,11 @@
-"""F1 22 UDP telemetry (packet format 2022) layouts and decoded record models.
+"""Decoded record models for the F1 UDP telemetry formats, with F1 22's 2022 layouts.
 
-Layouts follow the official Codemasters "F1 22 UDP Specification": little-endian,
-packed structs, 22 cars per array. Each record dataclass carries its binary layout in
-field metadata, so the decoder and the test/diagnostic packet builder share one
-definition. Tests assert the resulting sizes against the spec's published totals.
+Layouts follow the official "F1 22 UDP Specification": little-endian, packed structs,
+22 cars per array. Each record dataclass carries its 2022 binary layout in field
+metadata, so the decoder and the test/diagnostic packet builder share one definition.
+telemetry/formats.py derives the F1 23, F1 24 and F1 25 layouts from these; fields
+after the wire fields are filled by the decoder (or only exist in newer formats).
+Tests assert the resulting sizes against each spec's published totals.
 
 Wheel arrays in F1 22 are ordered RL, RR, FL, FR.
 """
@@ -73,9 +75,13 @@ class PacketId(IntEnum):
     LOBBY_INFO = 9
     CAR_DAMAGE = 10
     SESSION_HISTORY = 11
+    TYRE_SETS = 12        # F1 23 on
+    MOTION_EX = 13        # F1 23 on
+    TIME_TRIAL = 14       # F1 24 on
+    LAP_POSITIONS = 15    # F1 25 on
 
 
-# Total packet sizes (bytes) published in the F1 22 specification.
+# Total packet sizes (bytes) published in the F1 22 specification (other years: telemetry/formats.py).
 PACKET_SIZES = {
     PacketId.MOTION: 1464,
     PacketId.SESSION: 632,
@@ -105,6 +111,8 @@ class PacketHeader:
     frame_identifier: int = _f("I")
     player_car_index: int = _f("B")
     secondary_player_car_index: int = _f("B")  # 255 if no second player
+    game_year: int = 0                    # F1 23 on (e.g. 24)
+    overall_frame_identifier: int = 0     # F1 23 on; doesn't go back after a flashback
 
 
 @dataclass(slots=True, frozen=True)
@@ -182,6 +190,8 @@ class LapData:
     pit_lane_time_in_lane_ms: int = _f("H")
     pit_stop_timer_ms: int = _f("H")
     pit_stop_should_serve_pen: int = _f("B")
+    delta_to_car_in_front_ms: int | None = None   # game-reported, F1 23 on; None when not sent
+    delta_to_race_leader_ms: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -208,6 +218,21 @@ class SessionData:
     pit_window_ideal_lap: int = 0         # game's strategy for the player; 0 = not provided
     pit_window_latest_lap: int = 0
     pit_rejoin_position: int = 0
+    session_type_name: str | None = None  # session_type looked up in that year's table (numbering changed in F1 24)
+    forecast: tuple = ()                  # WeatherForecastSample, as many as the game says it sent
+    forecast_accuracy: int | None = None  # 0 perfect, 1 approximate
+
+
+@dataclass(slots=True, frozen=True)
+class WeatherForecastSample:
+    session_type: int = _f("B")           # same numbering as SessionData.session_type of that year
+    time_offset_min: int = _f("B")        # minutes from now
+    weather: int = _f("B")
+    track_temperature: int = _f("b")
+    track_temperature_change: int = _f("b")  # 0 up, 1 down, 2 no change
+    air_temperature: int = _f("b")
+    air_temperature_change: int = _f("b")
+    rain_percentage: int = _f("B")
 
 
 # Byte offset of m_safetyCarStatus from the packet start: header + 19 fixed bytes + 21*5 marshal zones.
@@ -215,6 +240,33 @@ SESSION_SAFETY_CAR_OFFSET = 24 + 19 + 21 * 5
 # m_pitStopWindowIdealLap: after safety car, network game, forecast count, 56*8 forecast samples,
 # forecast accuracy, AI difficulty and three uint32 link identifiers. Followed by latest lap, rejoin position.
 SESSION_PIT_WINDOW_OFFSET = SESSION_SAFETY_CAR_OFFSET + 3 + 56 * 8 + 2 + 12  # 613
+
+
+@dataclass(slots=True, frozen=True)
+class CarSetupData:
+    front_wing: int = _f("B")
+    rear_wing: int = _f("B")
+    on_throttle: int = _f("B")            # differential, %
+    off_throttle: int = _f("B")
+    front_camber: float = _f("f")
+    rear_camber: float = _f("f")
+    front_toe: float = _f("f")
+    rear_toe: float = _f("f")
+    front_suspension: int = _f("B")
+    rear_suspension: int = _f("B")
+    front_anti_roll_bar: int = _f("B")
+    rear_anti_roll_bar: int = _f("B")
+    front_suspension_height: int = _f("B")
+    rear_suspension_height: int = _f("B")
+    brake_pressure: int = _f("B")         # %
+    brake_bias: int = _f("B")             # %
+    rear_left_tyre_pressure: float = _f("f")   # PSI
+    rear_right_tyre_pressure: float = _f("f")
+    front_left_tyre_pressure: float = _f("f")
+    front_right_tyre_pressure: float = _f("f")
+    ballast: int = _f("B")
+    fuel_load: float = _f("f")            # kg
+    engine_braking: int | None = None     # %, F1 24 on
 
 
 @dataclass(slots=True, frozen=True)
@@ -325,6 +377,47 @@ class ButtonDetails:
     button_status: int = _f("I")          # bit flags of the buttons held; see udp_action_bit()
 
 
+@dataclass(slots=True, frozen=True)
+class PenaltyDetails:
+    penalty_type: int = _f("B")           # PENALTY_TYPES
+    infringement_type: int = _f("B")      # INFRINGEMENTS
+    vehicle_idx: int = _f("B")
+    other_vehicle_idx: int = _f("B")      # 255 when nobody else was involved
+    time: int = _f("B")                   # seconds; 255 when not a time penalty
+    lap_num: int = _f("B")
+    places_gained: int = _f("B")
+
+
+@dataclass(slots=True, frozen=True)
+class VehicleDetails:
+    """RTMT, TMPT, RCWN, DTSV, SGSV: one car index (F1 25 appends a reason or stop time, not read)."""
+    vehicle_idx: int = _f("B")
+
+
+@dataclass(slots=True, frozen=True)
+class OvertakeDetails:                    # OVTK, F1 23 on
+    overtaking_vehicle_idx: int = _f("B")
+    being_overtaken_vehicle_idx: int = _f("B")
+
+
+@dataclass(slots=True, frozen=True)
+class SafetyCarDetails:                   # SCAR, F1 24 on
+    safety_car_type: int = _f("B")        # 0 none, 1 full, 2 virtual, 3 formation lap
+    event_type: int = _f("B")             # 0 deployed, 1 returning, 2 returned, 3 resume race
+
+
+@dataclass(slots=True, frozen=True)
+class CollisionDetails:                   # COLL, F1 24 on
+    vehicle1_idx: int = _f("B")
+    vehicle2_idx: int = _f("B")
+
+
+EVENT_DETAILS = {"FTLP": FastestLapDetails, "FLBK": FlashbackDetails, "BUTN": ButtonDetails,
+                 "PENA": PenaltyDetails, "RTMT": VehicleDetails, "TMPT": VehicleDetails, "RCWN": VehicleDetails,
+                 "DTSV": VehicleDetails, "SGSV": VehicleDetails, "OVTK": OvertakeDetails,
+                 "SCAR": SafetyCarDetails, "COLL": CollisionDetails}
+
+
 def udp_action_bit(n: int) -> int:
     """Bit for the game's assignable "UDP Action n" button (1..12): 0x00100000 .. 0x80000000."""
     return 0x0010_0000 << (n - 1)
@@ -358,23 +451,31 @@ SESSION_TYPES = {
     5: "Qualifying 1", 6: "Qualifying 2", 7: "Qualifying 3", 8: "Short Qualifying",
     9: "One-Shot Qualifying", 10: "Race", 11: "Race 2", 12: "Race 3", 13: "Time Trial",
 }
+# F1 24 and F1 25 renumbered sessions to add the sprint shootout
+SESSION_TYPES_2024 = {
+    **{k: v for k, v in SESSION_TYPES.items() if k <= 9}, 10: "Sprint Shootout 1", 11: "Sprint Shootout 2",
+    12: "Sprint Shootout 3", 13: "Short Sprint Shootout", 14: "One-Shot Sprint Shootout", 15: "Race",
+    16: "Race 2", 17: "Race 3", 18: "Time Trial",
+}
 TRACKS = {
     0: "Melbourne", 1: "Paul Ricard", 2: "Shanghai", 3: "Sakhir (Bahrain)", 4: "Catalunya",
     5: "Monaco", 6: "Montreal", 7: "Silverstone", 8: "Hockenheim", 9: "Hungaroring", 10: "Spa",
     11: "Monza", 12: "Singapore", 13: "Suzuka", 14: "Abu Dhabi", 15: "Texas", 16: "Brazil",
     17: "Austria", 18: "Sochi", 19: "Mexico", 20: "Baku (Azerbaijan)", 21: "Sakhir Short",
     22: "Silverstone Short", 23: "Texas Short", 24: "Suzuka Short", 25: "Hanoi",
-    26: "Zandvoort", 27: "Imola", 28: "Portimão", 29: "Jeddah", 30: "Miami",
+    26: "Zandvoort", 27: "Imola", 28: "Portimão", 29: "Jeddah", 30: "Miami", 31: "Las Vegas", 32: "Losail",
+    39: "Silverstone (Reverse)", 40: "Austria (Reverse)", 41: "Zandvoort (Reverse)",
 }
 WEATHER = {0: "Clear", 1: "Light cloud", 2: "Overcast", 3: "Light rain", 4: "Heavy rain", 5: "Storm"}
 ACTUAL_COMPOUNDS = {
-    16: "C5", 17: "C4", 18: "C3", 19: "C2", 20: "C1", 7: "Inter", 8: "Wet",
+    16: "C5", 17: "C4", 18: "C3", 19: "C2", 20: "C1", 21: "C0", 7: "Inter", 8: "Wet",
     9: "Dry (classic)", 10: "Wet (classic)", 11: "Super soft (F2)", 12: "Soft (F2)",
     13: "Medium (F2)", 14: "Hard (F2)", 15: "Wet (F2)",
 }
 VISUAL_COMPOUNDS = {16: "Soft", 17: "Medium", 18: "Hard", 7: "Inter", 8: "Wet",
                     15: "Wet", 19: "Super soft", 20: "Soft", 21: "Medium", 22: "Hard"}
 RESULT_ACTIVE = 2  # lap data m_resultStatus: 0 invalid, 1 inactive, 2 active, 3 finished, 4+ out
+RESULT_FINISHED = 3
 PIT_STATUS = {0: "On track", 1: "Pitting", 2: "In pit area"}
 DRIVER_STATUS = {0: "In garage", 1: "Flying lap", 2: "In lap", 3: "Out lap", 4: "On track"}
 SAFETY_CAR = {0: "None", 1: "Safety car", 2: "Virtual safety car", 3: "Formation lap"}
@@ -385,5 +486,32 @@ EVENT_CODES = {
     "TMPT": "Team mate in pits", "CHQF": "Chequered flag", "RCWN": "Race winner",
     "PENA": "Penalty issued", "SPTP": "Speed trap", "STLG": "Start lights",
     "LGOT": "Lights out", "DTSV": "Drive-through served", "SGSV": "Stop-go served",
-    "FLBK": "Flashback", "BUTN": "Button status",
+    "FLBK": "Flashback", "BUTN": "Button status", "RDFL": "Red flag", "OVTK": "Overtake",
+    "SCAR": "Safety car", "COLL": "Collision",
 }
+PENALTY_TYPES = (
+    "Drive-through", "Stop-go", "Grid penalty", "Penalty reminder", "Time penalty", "Warning", "Disqualified",
+    "Removed from formation lap", "Parked too long timer", "Tyre regulations", "This lap invalidated",
+    "This and next lap invalidated", "This lap invalidated without reason",
+    "This and next lap invalidated without reason", "This and previous lap invalidated",
+    "This and previous lap invalidated without reason", "Retired", "Black flag timer",
+)
+INFRINGEMENTS = (
+    "Blocking by slow driving", "Blocking by wrong-way driving", "Reversing off the start line", "Big collision",
+    "Small collision", "Collision, failed to hand back position", "Collision, failed to hand back positions",
+    "Corner cutting, gained time", "Corner cutting overtake", "Corner cutting overtakes", "Crossed pit exit lane",
+    "Ignoring blue flags", "Ignoring yellow flags", "Ignoring drive-through", "Too many drive-throughs",
+    "Drive-through reminder, serve within laps", "Drive-through reminder, serve this lap", "Pit lane speeding",
+    "Parked for too long", "Ignoring tyre regulations", "Too many penalties", "Multiple warnings",
+    "Approaching disqualification", "Tyre regulations, select single", "Tyre regulations, select multiple",
+    "Lap invalidated, corner cutting", "Lap invalidated, running wide", "Corner cutting, ran wide, minor gain",
+    "Corner cutting, ran wide, significant gain", "Corner cutting, ran wide, extreme gain",
+    "Lap invalidated, wall riding", "Lap invalidated, flashback used", "Lap invalidated, reset to track",
+    "Blocking the pit lane", "Jump start", "Safety car to car collision", "Safety car illegal overtake",
+    "Safety car, exceeding allowed pace", "Virtual safety car, exceeding allowed pace",
+    "Formation lap below allowed speed", "Formation lap parking", "Retired, mechanical failure",
+    "Retired, terminally damaged", "Safety car, falling too far back", "Black flag timer",
+    "Unserved stop-go penalty", "Unserved drive-through penalty", "Engine component change", "Gearbox change",
+    "Parc fermé change", "League grid penalty", "Retry penalty", "Illegal time gain", "Mandatory pit stop",
+    "Attribute assigned",
+)

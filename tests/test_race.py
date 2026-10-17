@@ -468,3 +468,39 @@ def test_laps_undone_by_a_flashback_are_dropped_from_the_recording(tmp_path, mon
     app.ingest(Packet(last.header, PacketId.LAP_DATA, rewound, cars(rewound)), "demo")
     assert wait_until(lambda: repo.laps(sid).lap_number.tolist() == [1])
     app.shutdown()
+
+
+def test_laps_carry_the_setup_and_tyre_at_the_line(race):
+    from demo.simulator import DEMO_SETUP
+    app, _, _ = race
+    lap = app.tracker.laps[-1]
+    assert lap.tyre_compound == "Medium" and lap.tyre_age_laps == lap.lap_number - 1
+    assert lap.setup == {k: v for k, v in DEMO_SETUP.items()} and lap.setup["front_wing"] == DEMO_SETUP["front_wing"]
+    assert app.state.snapshot().setup["brake_bias"] == DEMO_SETUP["brake_bias"]
+
+
+def test_demo_forecast_rain_is_called_and_labelled(race):
+    app, _, engine = race
+    calls = [e for e in app.coach_events() if e.key.startswith("forecast:")]
+    assert [e.message for e in calls] == ["Forecast: Light rain in 30 min (60% chance of rain)"]
+    assert "Rain expected in 30 minutes, 60 percent." in engine.spoken
+    assert [f.time_offset_min for f in app.state.snapshot().forecast][:3] == [0, 5, 10]
+
+
+def test_demo_field_timing_tower(race):
+    app, _, _ = race
+    view = app.field_view()
+    tower = view["tower"]
+    assert view["race"] and len(tower) == 4 and [r.position for r in tower] == [1, 2, 3, 4]
+    assert sum(r.is_player for r in tower) == 1 and {r.name for r in tower} >= {"M. DUVAL", "T. OKAFOR"}
+    me = next(r for r in tower if r.is_player)
+    assert me.best_lap_ms == app.tracker.best_lap().lap_time_ms  # the game's history agrees with our timing
+    assert any(r.best_lap_ms for r in tower if not r.is_player)
+    assert [r.label for r in view["versus"]] == ["S1", "S2", "S3", "Lap", "Ideal"]
+
+
+def test_demo_race_control(race):
+    app, _, _ = race
+    msgs = [e.message for e in app.race_control.entries]
+    assert "DRS enabled" in msgs and "T. OKAFOR: 5 s time penalty, corner cutting, gained time" in msgs
+    assert any(m.startswith("Fastest lap: ") for m in msgs)

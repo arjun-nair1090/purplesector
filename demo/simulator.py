@@ -25,15 +25,22 @@ from telemetry.packet_models import (
     MAX_CARS,
     CarDamageData,
     CarMotionData,
+    CarSetupData,
     CarStatusData,
     CarTelemetryData,
     EventData,
+    FastestLapDetails,
     LapData,
+    LapHistoryData,
     Packet,
     PacketHeader,
     PacketId,
     ParticipantData,
+    PenaltyDetails,
     SessionData,
+    SessionHistory,
+    SessionHistoryHeader,
+    WeatherForecastSample,
 )
 
 TRACK_NAME = "Demo Ring (synthetic)"
@@ -62,7 +69,21 @@ RACE_LAPS = 30
 TURN_DEG = (135.3, -20.4, 79.5, -73.1, 161.2, -40.2, 125.7, -8.0)
 # fictional AI cars: (name, race number, start offset from the player in metres, pace factor)
 RIVALS = (("M. DUVAL", 7, 250.0, 1.003), ("T. OKAFOR", 21, 60.0, 0.99), ("L. BRANDT", 33, -60.0, 0.988))
+DEMO_TEAMS = (8, 1, 2, 3)  # game team ids for the player and the three rivals, so the tower shows team colours
 PIT_WINDOW = (14, 19, 4)  # ideal lap, latest lap, rejoin position (synthetic)
+FORECAST_OFFSETS = (0, 5, 10, 15, 30, 45, 60)  # minutes ahead, as the game sends them
+
+
+def demo_weather(t_s: float) -> tuple[int, int]:
+    """(weather code, rain %) of the synthetic race at game time t: cloud, then overcast, rain from minute 30."""
+    return (1, 5) if t_s < 900 else ((2, 25) if t_s < 1800 else (3, 60))
+
+
+DEMO_SETUP = dict(front_wing=6, rear_wing=4, on_throttle=70, off_throttle=55, front_camber=-2.5, rear_camber=-1.0,
+                  front_toe=0.05, rear_toe=0.2, front_suspension=5, rear_suspension=3, front_anti_roll_bar=5,
+                  rear_anti_roll_bar=3, front_suspension_height=4, rear_suspension_height=6, brake_pressure=100,
+                  brake_bias=56, rear_left_tyre_pressure=21.5, rear_right_tyre_pressure=21.5,
+                  front_left_tyre_pressure=23.0, front_right_tyre_pressure=23.0, ballast=6, fuel_load=53.0)
 
 
 def track_geometry() -> np.ndarray:
@@ -96,9 +117,35 @@ class _Rival:
     def __init__(self, offset_m: float, pace: float):
         self.total = offset_m
         self.pace = pace
+        self.laps: list[tuple] = []        # (lap ms, S1, S2, S3, valid flags), as the game's history has them
+        self._marks: list[float] | None = None  # times at the line, then at each sector end, this lap
 
-    def step(self, v_prof) -> None:
+    def step(self, v_prof, t: float) -> None:
+        before = self.total
         self.total += float(v_prof[int(self.total) % TRACK_LENGTH]) * self.pace * DT
+        if self.total < 0:
+            return
+        if before < 0 or self.total // TRACK_LENGTH > before // TRACK_LENGTH:  # crossed the line
+            if self._marks is not None and len(self._marks) == 3:
+                s1, s2 = self._marks[1] - self._marks[0], self._marks[2] - self._marks[1]
+                ms = [round(x * 1000) for x in (s1, s2, t - self._marks[2])]
+                self.laps.append((sum(ms), *ms, 0x0F))
+            self._marks = [t]
+        elif self._marks is not None:
+            third = TRACK_LENGTH / 3
+            if (self.total % TRACK_LENGTH) // third > (before % TRACK_LENGTH) // third:
+                self._marks.append(t)
+
+
+def history_record(car_idx: int, laps) -> SessionHistory:
+    """The game's session-history record for one car: its laps and the lap numbers of its bests."""
+    laps = laps[-100:]
+
+    def best(i, bit):
+        ok = [(lap[i], n) for n, lap in enumerate(laps, 1) if lap[4] & bit and lap[i]]
+        return min(ok)[1] if ok else 0
+    head = SessionHistoryHeader(car_idx, len(laps), 1, best(0, 1), best(1, 2), best(2, 4), best(3, 8))
+    return SessionHistory(head, tuple(LapHistoryData(*lap) for lap in laps))
 
 
 def _accel(v):
@@ -147,6 +194,7 @@ class DemoSimulator:
             raise ValueError(f"unknown scenario {scenario}")
         self.scenario = scenario
         self.session_uid = DEMO_UID_BASE + run_index
+        self.run_index = run_index
         self._start_race()
 
     def _start_race(self) -> None:
@@ -160,6 +208,9 @@ class DemoSimulator:
         self.invalid = False
         self.fuel = 53.0
         self.wear = 0.0
+        self.history: list[tuple] = []  # the player's laps as the game's session history reports them
+        self._events: list[EventData] = []  # race control messages due this frame
+        self._fastest_ms: int | None = None
         self._profile = build_profile(self._seed())
         self._rival_profile = build_profile(None)[0]
         self._pending_start = True
@@ -178,7 +229,7 @@ class DemoSimulator:
         return (self.lap - 1) * TRACK_LENGTH + self.d
 
     def _seed(self) -> int:
-        return 1000 + self.lap
+        return 1000 + self.lap + 7919 * self.run_index  # each demo run drives its own laps
 
     @property
     def interrupted(self) -> bool:
@@ -213,7 +264,15 @@ class DemoSimulator:
         if self.d >= TRACK_LENGTH:
             over_s = (self.d - TRACK_LENGTH) / v
             self.last_lap_ms = int(self.lap_ms - over_s * 1000)
+            s3 = self.last_lap_ms - self.s1 - self.s2
+            self.history.append((self.last_lap_ms, self.s1, self.s2, s3, 0x0E if self.invalid else 0x0F))
+            if not self.invalid:
+                self._fastest_lap(0, self.last_lap_ms)
             self.lap += 1
+            if self.lap == 2:
+                self._events.append(EventData("DRSE"))
+            elif self.lap == 3:  # a scripted penalty for a rival, so race control has something to show
+                self._events.append(EventData("PENA", PenaltyDetails(4, 7, 2, 255, 5, 3, 0)))
             self.d -= TRACK_LENGTH
             self.lap_ms = over_s * 1000
             self.s1 = self.s2 = 0
@@ -221,18 +280,24 @@ class DemoSimulator:
             self._profile = build_profile(self._seed())
         self.fuel = max(0.0, self.fuel - v * DT * 0.0004)
         self.wear += v * DT * 0.00035
-        for r in self.rivals:
-            r.step(self._rival_profile)
+        for car, r in enumerate(self.rivals, start=1):
+            done = len(r.laps)
+            r.step(self._rival_profile, self.t)
+            if len(r.laps) > done:
+                self._fastest_lap(car, r.laps[-1][0])
 
         if self.interrupted:
             return []
         out = []
         if self._pending_start:
             out.append(Packet(self._hdr(PacketId.EVENT), PacketId.EVENT, EventData("SSTA")))
+        out += [Packet(self._hdr(PacketId.EVENT), PacketId.EVENT, e) for e in self._events]
+        self._events = []
         if self._pending_start or self.frame % 300 == 1:  # the game repeats participants every 5 s
             self._pending_start = False
-            people = [ParticipantData(name=b"DEMO DRIVER", race_number=99)] + [
-                ParticipantData(ai_controlled=1, name=name.encode(), race_number=num) for name, num, _, _ in RIVALS]
+            people = [ParticipantData(name=b"DEMO DRIVER", race_number=99, team_id=DEMO_TEAMS[0])] + [
+                ParticipantData(ai_controlled=1, name=name.encode(), race_number=num, team_id=team)
+                for (name, num, _, _), team in zip(RIVALS, DEMO_TEAMS[1:], strict=True)]
             people += [ParticipantData()] * (MAX_CARS - len(people))
             out.append(Packet(self._hdr(PacketId.PARTICIPANTS), PacketId.PARTICIPANTS, people[0], tuple(people),
                               len(RIVALS) + 1))
@@ -244,21 +309,34 @@ class DemoSimulator:
         out.append(Packet(self._hdr(PacketId.LAP_DATA), PacketId.LAP_DATA, cars[0], cars))
         if self.frame % 30 == 1:
             ideal, latest, rejoin = PIT_WINDOW
+            ahead = ((m, *demo_weather(self.t + m * 60)) for m in FORECAST_OFFSETS)
+            forecast = tuple(WeatherForecastSample(10, m, w, 31, 2, 24, 2, rain) for m, w, rain in ahead)
             out.append(Packet(self._hdr(PacketId.SESSION), PacketId.SESSION, SessionData(
-                weather=1, track_temperature=31, air_temperature=24, total_laps=RACE_LAPS, track_length=TRACK_LENGTH,
-                session_type=10, track_id=-1, pit_window_ideal_lap=ideal, pit_window_latest_lap=latest,
-                pit_rejoin_position=rejoin)))
+                weather=demo_weather(self.t)[0], track_temperature=31, air_temperature=24, total_laps=RACE_LAPS,
+                track_length=TRACK_LENGTH, session_type=10, track_id=-1, pit_window_ideal_lap=ideal,
+                pit_window_latest_lap=latest, pit_rejoin_position=rejoin, forecast=forecast, forecast_accuracy=1)))
             laps_left = RACE_LAPS - self.lap + 1 - self.d / TRACK_LENGTH
             out.append(Packet(self._hdr(PacketId.CAR_STATUS), PacketId.CAR_STATUS, CarStatusData(
                 fuel_in_tank=self.fuel, fuel_capacity=110.0, fuel_remaining_laps=self.fuel / 1.72 - laps_left,
                 max_rpm=12000,
                 idle_rpm=4000, max_gears=8, drs_allowed=1, actual_tyre_compound=18, visual_tyre_compound=17,
                 tyres_age_laps=self.lap - 1, vehicle_fia_flags=0, ers_store_energy=3.2e6)))
+        if self.frame % 15 == 7:  # the game cycles session history through the cars
+            idx = (self.frame // 15) % (len(self.rivals) + 1)
+            hist = history_record(idx, self.history if idx == 0 else self.rivals[idx - 1].laps)
+            out.append(Packet(self._hdr(PacketId.SESSION_HISTORY), PacketId.SESSION_HISTORY, hist))
+        if self.frame % 60 == 31:  # the game sends setups twice a second
+            out.append(Packet(self._hdr(PacketId.CAR_SETUPS), PacketId.CAR_SETUPS, CarSetupData(**DEMO_SETUP)))
         if self.frame % 60 == 1:
             w = round(self.wear, 2)
             out.append(Packet(self._hdr(PacketId.CAR_DAMAGE), PacketId.CAR_DAMAGE,
                               CarDamageData(tyres_wear=(w * 1.1, w * 1.15, w * 0.9, w))))
         return out
+
+    def _fastest_lap(self, car: int, ms: int) -> None:
+        if self._fastest_ms is None or ms < self._fastest_ms:
+            self._fastest_ms = ms
+            self._events.append(EventData("FTLP", FastestLapDetails(car, ms / 1000)))
 
     def _telemetry(self, i: int, v: float) -> CarTelemetryData:
         _, steer_prof, brake_prof, thr_prof = self._profile

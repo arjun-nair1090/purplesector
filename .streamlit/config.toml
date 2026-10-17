@@ -6,14 +6,57 @@ headless = true
 address = "localhost"     # dashboard only reachable from this PC; see README to view on a tablet
 runOnSave = false
 fileWatcherType = "none"   # avoid reloading modules (and rebinding the UDP port) mid-session
+enableStaticServing = true  # bundled fonts in static/ (served at app/static/)
 
 [client]
 toolbarMode = "minimal"
 
+# Broadcast-timing palette: graphite ground, tone-stepped surfaces, timing colours for timing only.
 [theme]
 base = "dark"
 primaryColor = "#A66CFF"
+backgroundColor = "#12141A"
+secondaryBackgroundColor = "#1B1E26"
+textColor = "#ECEEF2"
+borderColor = "#2A2E38"
+showWidgetBorder = true
+showSidebarBorder = false
+baseRadius = "0.2rem"
+buttonRadius = "0.2rem"
+font = "'Barlow Semi Condensed', 'Segoe UI', sans-serif"
+headingFont = "'Barlow Semi Condensed', 'Segoe UI', sans-serif"
+baseFontSize = 15
+metricValueFontWeight = 600
+dataframeHeaderBackgroundColor = "#1B1E26"
+dataframeBorderColor = "#2A2E38"
+chartCategoricalColors = ["#A66CFF", "#9CA3B0", "#2BD47D", "#FF4F4F", "#F2C230", "#5CC8FF"]
+
+[[theme.fontFaces]]
+family = "Barlow Semi Condensed"
+url = "app/static/fonts/BarlowSemiCondensed-Regular.woff"
+weight = 400
+
+[[theme.fontFaces]]
+family = "Barlow Semi Condensed"
+url = "app/static/fonts/BarlowSemiCondensed-Medium.woff"
+weight = 500
+
+[[theme.fontFaces]]
+family = "Barlow Semi Condensed"
+url = "app/static/fonts/BarlowSemiCondensed-SemiBold.woff"
+weight = 600
+
+[[theme.fontFaces]]
+family = "Barlow Semi Condensed"
+url = "app/static/fonts/BarlowSemiCondensed-Bold.woff"
+weight = 700
+
+[[theme.fontFaces]]
+family = "Barlow Semi Condensed"
+url = "app/static/fonts/BarlowSemiCondensed-ExtraBoldItalic.woff"
+weight = 800
+style = "italic"
+
+[theme.sidebar]
 backgroundColor = "#171A21"
-secondaryBackgroundColor = "#1F232C"
-textColor = "#E9ECF2"
-font = "Bahnschrift, 'Segoe UI', sans-serif"
+secondaryBackgroundColor = "#20242D"
