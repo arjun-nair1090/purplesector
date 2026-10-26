@@ -212,6 +212,15 @@ CSS = f"""
            align-items:start; }}
 @media (max-width: 900px) {{ .ps-strip {{ grid-template-columns:1fr; }} }}
 @media (max-width: 600px) {{ .ps-call b {{ font-size:var(--t-b); }} }}
+/* a portrait monitor: the side-by-side splits (st.container keys split_*) stack into one column, with the
+   timing first, then the whole field without scrolling, and the delta sized to the full width */
+@media (orientation: portrait) {{
+  :root {{ --t-x:clamp(4.5rem, 12vw, 10rem); }}
+  [class*="st-key-split_"] [data-testid="stHorizontalBlock"] {{ flex-wrap:wrap; }}
+  [class*="st-key-split_"] [data-testid="stColumn"] {{ flex:1 1 100% !important; width:100% !important;
+    min-width:100% !important; }}
+  .ps-tower {{ max-height:none; }}
+}}
 </style>
 """
 

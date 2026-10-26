@@ -59,14 +59,14 @@ def render() -> None:
                       help="Re-open the UDP port after closing the other program")
         field = svc.field_view()
         field_best = tuple(r.field_ms for r in field["versus"][:3]) if field["versus"] else (None, None, None)
-        left, right = st.columns([1.8, 1], gap="small")
+        left, right = st.container(key="split_live_top").columns([1.8, 1], gap="small")
         left.html(c.hero(snap, svc.laps_view(), svc.gaps_view(), _me(field), field_best)
                   + c.last_call(svc.coach_events()))
         right.html(c.tower_block(field, field.get("year")))
 
     @st.fragment(run_every=max(1.0, refresh * 4))
     def charts():
-        left, right = st.columns([1.8, 1], gap="small")
+        left, right = st.container(key="split_live_charts").columns([1.8, 1], gap="small")
         with left:
             rows = svc.state.history()
             if rows:
