@@ -1,7 +1,7 @@
 """Lap boundaries, sector times and per-lap telemetry samples for the player car.
 
-Lap times always come from the game (m_lastLapTimeInMS at the lap-number change);
-nothing here is estimated. A lap's samples are flagged incomplete if tracking started
+Lap times always come from the game (m_lastLapTimeInMS at the lap-number change, or at the
+chequered flag for a race's final lap, where the lap number stays put); nothing here is estimated. A lap's samples are flagged incomplete if tracking started
 mid-lap, telemetry had a gap, or a flashback rewound past recorded samples.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ from enum import Enum, auto
 
 from analysis.statistics import best_sectors
 from config.defaults import MAX_LAP_SAMPLES
+from telemetry.packet_models import RESULT_FINISHED
 
 BASE_SAMPLE_FIELDS = ("session_time", "lap_ms", "lap_distance", "speed", "throttle", "brake", "steer", "gear", "rpm")
 POSITION_FIELDS = ("pos_x", "pos_y", "pos_z")  # world position from the motion packet; None until one arrives
@@ -64,13 +65,16 @@ class LapEvent:
 
 
 class _CurrentLap:
-    def __init__(self, lap_number: int, started_mid_lap: bool):
+    def __init__(self, lap_number: int, started_mid_lap: bool, prior_lap_ms: int = 0):
         self.lap_number = lap_number
         self.samples: list[tuple] = []
         self.complete = not started_mid_lap
         self.pit = False
         self.out_lap = False
         self.last = None  # last LapData seen for this lap
+        self.prior_lap_ms = prior_lap_ms  # game's last lap time when this lap began
+        self.flagged = False  # took the chequered flag: nothing after the line belongs to this lap
+        self.closed = False   # reported as completed at the flag
 
 
 class LapTracker:
@@ -114,17 +118,33 @@ class LapTracker:
         events: list[LapEvent] = []
         cur, prev = self._cur, self._last_lap_data
         if cur is None:
-            self._cur = _CurrentLap(lap.current_lap_num, self._mid_lap(lap))
+            self._cur = _CurrentLap(lap.current_lap_num, self._mid_lap(lap), lap.last_lap_time_ms)
+            if lap.result_status == RESULT_FINISHED:
+                self._cur.flagged = self._cur.closed = True  # joined after the flag: no lap to record
         elif lap.current_lap_num > cur.lap_number:
-            events.append(self._complete(cur, lap))
+            if not cur.closed:
+                events.append(self._complete(cur, lap))
             # skipping a lap number means we missed telemetry: the new lap can't be complete either
-            self._cur = _CurrentLap(lap.current_lap_num, lap.current_lap_num != cur.lap_number + 1)
+            self._cur = _CurrentLap(lap.current_lap_num, lap.current_lap_num != cur.lap_number + 1,
+                                    lap.last_lap_time_ms)
         elif lap.current_lap_num < cur.lap_number:
             # flashback / restart back across the line: the lap in progress is gone, and so is every lap
             # the rewind undid (it is driven again and reported again)
-            self._cur = _CurrentLap(lap.current_lap_num, True)
+            self._cur = _CurrentLap(lap.current_lap_num, True, lap.last_lap_time_ms)
             self.laps = [done for done in self.laps if done.lap_number < lap.current_lap_num]
             events.append(LapEvent(LapEventKind.FLASHBACK, lap.current_lap_num, crossed_line=True))
+        elif cur.closed:
+            self._last_lap_data = lap
+            return events
+        elif lap.result_status == RESULT_FINISHED:
+            # the chequered flag: the game never moves to a next lap, so the final lap closes here, on the game's
+            # lap time, which can land a packet after the finished status
+            cur.flagged = True
+            if lap.last_lap_time_ms not in (0, cur.prior_lap_ms):
+                events.append(self._complete(cur, lap))
+                cur.closed = True
+            self._last_lap_data = lap
+            return events
         elif prev and lap.current_lap_time_ms + 100 < prev.current_lap_time_ms:
             # flashback within the lap: drop samples recorded after the rewind point
             cur.samples = [s for s in cur.samples if s[1] <= lap.current_lap_time_ms]
@@ -146,7 +166,7 @@ class LapTracker:
 
     def on_telemetry(self, session_time: float, car) -> None:
         cur, lap = self._cur, self._last_lap_data
-        if cur is None or lap is None:
+        if cur is None or lap is None or cur.flagged:
             return
         if cur.samples and session_time - cur.samples[-1][0] > MAX_SAMPLE_GAP_S:
             cur.complete = False
