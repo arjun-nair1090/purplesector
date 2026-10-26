@@ -18,8 +18,8 @@ class FakeEngine:
     def __init__(self):
         self.spoken = []
 
-    def configure(self, rate, volume):
-        self.rate, self.volume = rate, volume
+    def configure(self, rate, volume, voice=None, radio=True):
+        self.rate, self.volume, self.voice, self.radio = rate, volume, voice, radio
 
     def speak(self, text):
         self.spoken.append(text)

@@ -5,6 +5,7 @@ plotly>=6.0,<8
 pandas>=2.2,<4
 numpy>=2.0,<3
 comtypes>=1.4; sys_platform == "win32"   # Windows SAPI voice
+piper-tts>=1.3; sys_platform == "win32"  # neural engineer voices (GPL-3.0; left out of the exe build)
 
 # development / tests
 pytest>=8

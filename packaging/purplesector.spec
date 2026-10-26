@@ -19,7 +19,7 @@ datas += [(str(ROOT / "app.py"), "."), (str(ROOT / ".streamlit" / "config.toml")
           (str(ROOT / "scripts" / "diagnostics.py"), "scripts")]
 
 a = Analysis([str(ROOT / "packaging" / "launcher.py")], pathex=[str(ROOT)], binaries=binaries, datas=datas,
-             hiddenimports=hidden, excludes=["pytest", "ruff", "tkinter.test"], noarchive=False)
+             hiddenimports=hidden, excludes=["pytest", "ruff", "tkinter.test", "piper", "onnxruntime"], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="PurpleSector", console=True,
           icon=str(ROOT / "assets" / "icon.ico"))

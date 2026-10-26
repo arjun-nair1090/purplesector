@@ -8,7 +8,7 @@ import streamlit as st
 from config.defaults import SETTINGS_PATH
 from config.settings import CONFIDENCE, DEMO_SCENARIOS, VERBOSITY, build_settings
 from service import get_service
-from ui.dashboard import SCENARIO_LABELS
+from ui.dashboard import SCENARIO_LABELS, voice_download, voice_select
 
 
 def render() -> None:
@@ -42,8 +42,24 @@ def render() -> None:
         st.subheader("Voice coach")
         a, b, f = st.columns(3)
         voice = a.toggle("Voice enabled", s.voice_enabled)
-        rate = b.slider("Speech rate", -10, 10, s.voice_rate, help="Windows speech rate; 0 is normal")
+        rate = b.slider("Speech rate", -10, 10, s.voice_rate, help="Speaking pace; 0 is the voice's own pace")
         vol = f.slider("Volume", 0, 100, s.voice_volume)
+        a, b, f = st.columns(3)
+        with a:
+            voice_name = voice_select(svc, "Engineer's voice", key="settings_voice")
+        radio_fx = b.toggle("Team-radio sound", s.voice_radio_fx,
+                            help="The engineer comes through a radio channel: band-limited, compressed, with the "
+                                 "click and static as it opens and closes. Off: a clean voice.")
+        driver = f.text_input("What the engineer calls you", s.driver_name, max_chars=24,
+                              placeholder="No name", help="Used now and then, e.g. on a personal best or at the flag")
+        a, b = st.columns(2)
+        race_radio = a.toggle("Race radio", s.race_radio,
+                              help="In races, unprompted calls: places gained or lost, a car within a second, laps "
+                                   "to go, tyre wear, fuel going short, the pit window, blue and yellow flags, wing "
+                                   "damage and your finishing position")
+        race_every = b.number_input("Gaps update every (laps)", 0, 20, s.race_update_laps, 1,
+                                    help="Position and gaps to the cars either side at the line every N laps. "
+                                         "0: only when a car is within a second.")
         a, b, f, g = st.columns(4)
         interval = a.number_input("Minimum gap between messages (s)", 0.0, 120.0, float(s.voice_min_interval_s), 0.5)
         cooldown = b.number_input("Repeat cooldown (s)", 0.0, 3600.0, float(s.coach_cooldown_s), 5.0,
@@ -59,7 +75,7 @@ def render() -> None:
         radio = a.selectbox("Radio on request: wheel button", list(range(13)), index=s.radio_button,
                             format_func=lambda n: "Off" if n == 0 else f"UDP Action {n}",
                             help="In the game, assign a button to this UDP Action under Controls. Pressing it makes "
-                                 "the engineer read out your delta, gaps and fuel. The sidebar's Radio check does "
+                                 "the engineer read out your position, delta, gaps, fuel and tyres. The sidebar's Radio check does "
                                  "the same.")
         overlay_port = b.number_input("Overlay port (this PC only)", 1024, 65535, s.overlay_port, step=1,
                                       help="Local endpoint the always-on-top overlay reads. Bound to 127.0.0.1.")
@@ -101,7 +117,9 @@ def render() -> None:
                    segment_loss_threshold_s=segment, brake_abrupt_ratio=brake, history_window_s=window,
                    ui_refresh_ms=refresh, recording_enabled=rec, record_demo=rec_demo, demo_scenario=scenario,
                    demo_speed=speed, data_dir=data_dir.strip(), radio_button=radio, overlay_port=overlay_port,
-                   corner_calls=corner_calls, corner_loss_threshold_s=corner_loss)
+                   corner_calls=corner_calls, corner_loss_threshold_s=corner_loss, voice_name=voice_name,
+                   voice_radio_fx=radio_fx, driver_name=driver.strip(), race_radio=race_radio,
+                   race_update_laps=race_every)
         candidate, errors = build_settings(raw)
         if errors:
             for name, msg in errors.items():
@@ -117,6 +135,7 @@ def render() -> None:
                 st.success("Settings saved and applied.")
                 st.rerun()
 
+    voice_download(svc)
     if st.button("Reset to safe defaults", help="Restores every setting to its default and restarts the receiver"):
         svc.reset_settings()
         svc.settings_errors = {}
@@ -135,6 +154,8 @@ LABELS = {
     "ui_refresh_ms": "Readout refresh", "demo_speed": "Demo speed", "demo_scenario": "Demo scenario",
     "data_dir": "Data directory", "settings_file": "Settings file", "radio_button": "Radio wheel button",
     "overlay_port": "Overlay port", "corner_loss_threshold_s": "Corner loss to report",
+    "voice_name": "Engineer's voice", "voice_radio_fx": "Team-radio sound", "driver_name": "What the engineer calls you",
+    "race_radio": "Race radio", "race_update_laps": "Gaps update every",
 }
 
 

@@ -27,6 +27,7 @@ from analysis.gaps import RACE_SESSIONS, GapTracker
 from analysis.lap_comparison import delta_at, reference_curve, samples_frame
 from analysis.lap_tracker import LapEventKind, LapTracker
 from analysis.race_control import RaceControl
+from analysis.race_radio import RaceRadio
 from analysis.statistics import SessionStats, consistency_s, theoretical_best_ms
 from analysis.strategy import LapResources, projection
 from analysis.track_map import TrackMap
@@ -50,6 +51,7 @@ from telemetry.packet_models import (
 )
 from telemetry.receiver import UdpReceiver
 from telemetry.state import TelemetryState
+from voice import engines
 from voice.speaker import VoiceCoach, default_engine_factory
 
 log = logging.getLogger(__name__)
@@ -73,9 +75,12 @@ class AppService:
         self.field = FieldTiming()
         self.corners = CornerCoach(settings.corner_loss_threshold_s)
         self.coach = Coach(CoachConfig.from_settings(settings))
+        self.voice_note: str | None = None  # why the chosen voice isn't the one speaking
+        self.voice_download: dict | None = None  # {"voice", "progress", "error"} while a voice downloads
         self.voice = VoiceCoach(engine_factory=engine_factory, enabled=settings.voice_enabled,
                                 rate=settings.voice_rate, volume=settings.voice_volume,
-                                min_interval_s=settings.voice_min_interval_s)
+                                min_interval_s=settings.voice_min_interval_s, voice=self._voice_spec(settings),
+                                radio=settings.voice_radio_fx)
         self.receiver: UdpReceiver | None = None
         self.demo: DemoRunner | None = None
         self._demo_runs = 0
@@ -85,6 +90,8 @@ class AppService:
         self.overlay_server = None
         self.capture: CaptureWriter | None = None
         self._radio_n = 0
+        self._progress_at = -1.0
+        self.race_radio = RaceRadio()
         self._reset_pace()
         self._reset_race()
         self.recording_key: str | None = None
@@ -227,6 +234,9 @@ class AppService:
                 events = self._guard("lap tracker", self.tracker.on_lap_data, packet.data) or []
                 for ev in events:
                     self._guard("lap event", self._on_lap_event, ev)
+                if not 0 <= h.session_time - self._progress_at < 0.25:  # positions, flags, damage: 4 times a second
+                    self._progress_at = h.session_time
+                    self._guard("race radio", self._race_progress)
                 self.delta_s = delta_at(self._ref_curve, packet.data.lap_distance, packet.data.current_lap_time_ms)
             elif pid == PacketId.CAR_TELEMETRY:
                 d = packet.data
@@ -293,6 +303,7 @@ class AppService:
         self.resources.reset()
         self.weather.reset()
         self.race_control.reset()
+        self.race_radio.reset()
         self.field.reset()
         self.track_map: TrackMap | None = None
         self.track_map_source: str | None = None
@@ -411,8 +422,11 @@ class AppService:
             self._guard("gaps", self.gaps.on_player_lap, self._player_idx)
             if self.recording_key:
                 self.writer.save_lap(self.recording_key, ev.lap)
+            race = snap.session_type in RACE_SESSIONS
             self._speak(self.coach.on_lap_completed(ev.lap, self.tracker, self._history_best_ms, snap.track_name,
-                                                    self.track_map.corners if self.track_map else None))
+                                                    self.track_map.corners if self.track_map else None, race))
+            if race and self.settings.race_radio:
+                self._guard("race radio", self._race_line, ev.lap.lap_number)
             self._update_pace(ev.lap)
         elif k == LapEventKind.FLASHBACK and ev.crossed_line:
             self._on_laps_undone(ev.lap_number)
@@ -425,6 +439,18 @@ class AppService:
             self._speak(self.coach.simple(f"pit:{k.name}:{ev.lap_number}", Category.SESSION,
                                           "Pit entry" if entry else "Pit exit", Priority.LOW,
                                           f"Game pit status ({PIT_STATUS[1] if entry else PIT_STATUS[0]})"))
+
+    def _race_progress(self) -> None:
+        snap = self.state.snapshot()
+        if self.settings.race_radio and snap.session_type in RACE_SESSIONS:
+            self._speak([e for e in self.race_radio.on_progress(snap) if self.coach.accept(e)])
+
+    def _race_line(self, completed: int) -> None:
+        e = self.race_radio.on_line(completed, self.state.snapshot(), self.gaps_view(),
+                                    self.strategy_view()["fuel_margin"], self.settings.race_update_laps,
+                                    self.coach.config.driver_name)
+        if self.coach.accept(e):
+            self._speak([e])
 
     def _race_control_session(self, h) -> None:
         snap = self.state.snapshot()
@@ -548,7 +574,8 @@ class AppService:
             self.coach.config = CoachConfig.from_settings(new)
             self.corners.threshold_s = new.corner_loss_threshold_s
             self.voice.configure(enabled=new.voice_enabled, rate=new.voice_rate, volume=new.voice_volume,
-                                 min_interval_s=new.voice_min_interval_s)
+                                 min_interval_s=new.voice_min_interval_s, voice=self._voice_spec(new),
+                                 radio=new.voice_radio_fx)
             if new.history_window_s != old.history_window_s:
                 self.state.set_history_window(new.history_window_s)
             if self.demo and (new.demo_speed != old.demo_speed):
@@ -648,9 +675,47 @@ class AppService:
     def _radio_facts(self) -> dict:
         snap = self.state.snapshot()
         s = self.strategy_view()
+        race = snap.session_type in RACE_SESSIONS
+        laps_left = snap.total_laps - snap.lap_number + 1 if race and snap.total_laps and snap.lap_number else None
         return {"delta_s": self.delta_s, "delta_ref": self.delta_ref, "gaps": self.gaps_view(),
                 "fuel_margin_laps": s["fuel_margin"], "fuel_margin_source": s["fuel_source"],
-                "last_lap_ms": snap.last_lap_ms}
+                "last_lap_ms": snap.last_lap_ms, "position": snap.position if race else None,
+                "laps_left": laps_left if laps_left and laps_left > 0 else None, "tyre_wear": snap.tyre_wear_pct}
+
+    # ---------------- engineer's voice ----------------
+    @property
+    def voices_dir(self) -> Path:
+        return self.settings.data_path / "voices"
+
+    def _voice_spec(self, settings: Settings) -> str:
+        spec, self.voice_note = engines.resolve(settings.voice_name, settings.data_path / "voices")
+        return spec
+
+    def voice_options(self) -> list:
+        return engines.voice_options(self.voices_dir)
+
+    def download_voice(self, voice_id: str) -> bool:
+        """Fetch a Piper voice in the background; it becomes the speaking voice when it arrives (if still chosen).
+        False if a download is already running or the id isn't a Piper voice."""
+        kind, _, model = voice_id.partition(":")
+        if kind != "piper" or (self.voice_download and self.voice_download.get("error") is None
+                               and self.voice_download.get("progress", 0) < 1):
+            return False
+        status = self.voice_download = {"voice": voice_id, "progress": 0.0, "error": None}
+
+        def run():
+            try:
+                engines.download_piper_model(model, self.voices_dir, lambda f: status.update(progress=f))
+                status["progress"] = 1.0
+                with self._lock:
+                    if self.settings.voice_name == voice_id:
+                        self.voice.configure(voice=self._voice_spec(self.settings))
+            except Exception as exc:
+                status["error"] = str(exc)
+                log.warning("Voice download failed: %s", exc)
+
+        threading.Thread(target=run, name="voice-download", daemon=True).start()
+        return True
 
     def radio_check(self) -> bool:
         """Status call on request (wheel button or the sidebar). Returns whether it was queued."""
