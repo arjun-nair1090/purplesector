@@ -163,7 +163,7 @@ def _session_sections(repo, sid, laps) -> None:
     found = stints(rows)
     if any(len(s.laps) >= 2 for s in found):
         st.subheader("Tyre life")
-        left, right = st.columns([1.6, 1])
+        left, right = st.container(key="split_tyre_life").columns([1.6, 1])
         left.plotly_chart(c.tyre_life_chart(found), config={"displayModeBar": False, "responsive": True})
         right.dataframe(pd.DataFrame({
             "Stint": range(1, len(found) + 1), "Compound": [s.compound or "—" for s in found],
@@ -186,7 +186,7 @@ def _delta_map(track_map, frame) -> None:
     rate = np.convolve(np.nan_to_num(rate), np.ones(9) / 9, mode="same")  # 45 m smoothing
     per_point = np.interp(track_map.distance_m, d, rate, left=np.nan, right=np.nan)
     st.subheader("Where the time went")
-    left, right = st.columns([1.4, 1])
+    left, right = st.container(key="split_delta_map").columns([1.4, 1])
     with left:
         st.plotly_chart(c.track_map_chart(track_map, color=per_point, color_label="s / 100 m", height=420),
                         config={"displayModeBar": False, "responsive": True})
