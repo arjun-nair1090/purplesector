@@ -2,10 +2,10 @@ from analysis.lap_tracker import LapEventKind, LapTracker
 from telemetry.packet_models import CarTelemetryData, LapData
 
 
-def lap(num, cur_ms, *, last=0, s1=0, s2=0, dist=0.0, invalid=0, pit=0, status=1):
+def lap(num, cur_ms, *, last=0, s1=0, s2=0, dist=0.0, invalid=0, pit=0, status=1, result=0):
     return LapData(last_lap_time_ms=last, current_lap_time_ms=cur_ms, sector1_time_ms=s1, sector2_time_ms=s2,
                    lap_distance=dist, current_lap_num=num, current_lap_invalid=invalid, pit_status=pit,
-                   driver_status=status)
+                   driver_status=status, result_status=result)
 
 
 def drive(tr, num, start_ms, end_ms, *, t0=0.0, length=3000.0, s1=None, s2=None, invalid_from=None, pit=0):
@@ -56,6 +56,46 @@ def test_telemetry_gap_marks_incomplete():
     tr.on_telemetry(100.0, CarTelemetryData())  # 1+ s jump in game time
     tr.on_lap_data(lap(2, 10, last=90000))
     assert not tr.laps[0].samples_complete
+
+
+def test_final_lap_completes_at_the_flag_though_the_lap_number_stays():
+    tr = LapTracker()
+    drive(tr, 1, 0, 90000)
+    tr.on_lap_data(lap(2, 20, last=90000))
+    ev, t = drive(tr, 2, 20, 88000, s1=29000, s2=30000, t0=90.0)
+    ev += tr.on_lap_data(lap(2, 30, last=88004, result=3))  # finished: the game keeps lap 2
+    done = [e for e in ev if e.kind == LapEventKind.LAP_COMPLETED]
+    assert len(done) == 1
+    lp = done[0].lap
+    assert lp.lap_number == 2 and lp.lap_time_ms == 88004 and lp.sectors == (29000, 30000, 29004)
+    assert lp.valid and lp.samples_complete
+    # the cool-down lap after the flag is neither sampled nor reported again
+    n = len(lp.samples)
+    later = []
+    for ms in range(50, 5000, 16):
+        later += tr.on_lap_data(lap(2, ms, last=88004, result=3))
+        tr.on_telemetry(t, CarTelemetryData(speed=120))
+        t += 0.016
+    assert not later and len(tr.laps) == 2 and len(lp.samples) == n
+
+
+def test_final_lap_waits_for_the_game_to_report_its_time():
+    tr = LapTracker()
+    drive(tr, 1, 0, 90000)
+    tr.on_lap_data(lap(2, 20, last=90000))
+    drive(tr, 2, 20, 88000, s1=29000, s2=30000, t0=90.0)
+    # the finished status can arrive a packet before the final lap time does
+    assert not tr.on_lap_data(lap(2, 88016, last=90000, s1=29000, s2=30000, result=3))
+    ev = tr.on_lap_data(lap(2, 30, last=88004, result=3))
+    assert [e.lap.lap_time_ms for e in ev if e.kind == LapEventKind.LAP_COMPLETED] == [88004]
+    assert tr.laps[-1].sectors == (29000, 30000, 29004)
+
+
+def test_joining_a_finished_session_records_no_lap():
+    tr = LapTracker()
+    for ms in range(0, 3000, 16):
+        assert not tr.on_lap_data(lap(5, ms, last=81000, result=3))
+    assert tr.laps == []
 
 
 def test_flashback_within_lap_trims_samples():
