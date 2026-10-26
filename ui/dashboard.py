@@ -205,12 +205,20 @@ def sidebar() -> None:
         v = st.toggle("Voice coach", value=s.voice_enabled)
         if v != s.voice_enabled:
             svc.update_settings(voice_enabled=v)
+        pick = voice_select(svc, "Engineer's voice", key="sidebar_voice")
+        if pick != s.voice_name:
+            svc.update_settings(voice_name=pick)
+            st.rerun()
+        voice_download(svc)
+        vol = st.slider("Radio volume", 0, 100, s.voice_volume, step=5, format="%d%%")
+        if vol != s.voice_volume:
+            svc.update_settings(voice_volume=vol)
         a, b = st.columns(2)
         if a.button("Test voice", width="stretch"):
             if not svc.voice.test():
                 st.warning(svc.voice.last_error or "Voice output is unavailable.")
         if b.button("Radio check", width="stretch",
-                    help="Your engineer reads out delta, gaps and fuel now. "
+                    help="Your engineer reads out position, delta, gaps, fuel and tyres now. "
                          + (f"Wheel button: UDP Action {s.radio_button}." if s.radio_button
                             else "Assign a wheel button under Settings → Radio on request.")):
             svc.radio_check()
@@ -227,6 +235,48 @@ def sidebar() -> None:
             svc.set_recording(r)
         if svc.settings_errors:
             st.warning("Some settings were invalid and reset to defaults. See Settings.")
+
+
+def voice_select(svc, label: str, key: str) -> str:
+    """The voice picker: Piper voices first (marked when they still need downloading), then the Windows voices."""
+    options = {o.id: o for o in svc.voice_options()}
+    current = svc.settings.voice_name
+    if current not in options:
+        options = {current: None, **options}  # keep a saved choice visible even if it can't be offered now
+
+    def fmt(vid):
+        o = options.get(vid)
+        if o is None:
+            return vid.partition(":")[2] or vid
+        return o.label + ("" if o.installed else f" · download {o.size_mb} MB")
+    return st.selectbox(label, list(options), index=list(options).index(current), format_func=fmt, key=key,
+                        help="Neural voices sound like a person and run offline once downloaded. The Windows "
+                             "voices are always available and are used while a neural voice isn't.")
+
+
+@st.fragment(run_every=1.0)
+def voice_download(svc) -> None:
+    """Download button and progress for the chosen neural voice; nothing once it's installed."""
+    s = svc.settings
+    opt = next((o for o in svc.voice_options() if o.id == s.voice_name), None)
+    dl = svc.voice_download
+    if dl and dl["voice"] == s.voice_name and dl["error"] is None:
+        if dl["progress"] < 1:
+            st.progress(dl["progress"], text=f"Downloading voice… {dl['progress']:.0%}")
+            return
+        if not dl.get("shown"):
+            dl["shown"] = True
+            st.rerun()  # the whole page, so the picker drops its "download" label
+    if opt is not None and opt.kind == "piper" and not opt.installed:
+        if st.button(f"Download this voice ({opt.size_mb} MB)", width="stretch", key="voice_dl",
+                     help=f"One download from the Piper voice library (Hugging Face), then it works offline. "
+                          f"Voice recordings licence: {opt.licence}."):
+            svc.download_voice(s.voice_name)
+            st.rerun(scope="fragment")
+        if dl and dl["voice"] == s.voice_name and dl["error"]:
+            st.caption(f"Download failed: {dl['error']}")
+    if svc.voice_note:
+        st.caption(svc.voice_note)
 
 
 _overlay_proc: subprocess.Popen | None = None

@@ -27,16 +27,21 @@ Either way the dashboard opens at **http://localhost:8501**. Click **Demo** in t
 
 ## Radio log
 
-This is what the engineer said in the first twelve laps of a Demo-mode race, copied from the app's output. The laps are synthetic; the words are exactly what PurpleSector says.
+This is what the engineer said in the first twelve laps of a Demo-mode race, copied from the app's output. The laps are synthetic; the words are what PurpleSector says. Recurring calls rotate between a few phrasings, so another run won't repeat them word for word.
 
 ```text
 LAP  1   forecast      "Rain expected in 30 minutes, 60 percent."
-LAP  2   corner 5      "Corner 5, lost 0.5. Minimum speed 6 lower."
-LAP  2   at the line   "Sector 2 was 0.9 slower than your best."
+LAP  1   position      "Good job, that's P2."
+LAP  2   at the line   "Okafor a tenth behind, within a second."
+LAP  2   corner 5      "Corner 5, lost 5 tenths. Minimum speed 6 lower."
+LAP  3   at the line   "Lost 9 tenths in sector 2."
+LAP  4   at the line   "P3. Gap behind 1.5 to Brandt, closing 2 tenths a lap."
 LAP  4   track limits  "Lap invalidated."
-LAP  7   at the line   "Session best by 0.08 seconds. Nice lap."
-LAP  8   wheel button  "Delta plus 0.3. Gap ahead 9.4, opening 0.2 a lap. Gap behind 1.2, opening 0.9 a lap. Fuel plus 0.8 laps."
-LAP  9   corner 6      "Corner 6, lost 0.2. Minimum speed 5 lower."
+LAP  5   position      "Up to P2."
+LAP  8   at the line   "That's your best of the session, up a tenth."
+LAP 10   at the line   "P2. Gap ahead 11.0 to Duval, opening 1.1 a lap. Gap behind 1.4 to Okafor."
+LAP 11   at the line   "Okafor 9 tenths behind, within a second, and closing."
+LAP 12   position      "Lost the place, P3."
 ```
 
 Every call shows its confidence and the evidence behind it: game lap timing, game sector times, the game's forecast, distance-aligned telemetry or packet timestamps. If the evidence isn't there, it says nothing. Each kind of call has a cooldown, corner calls are capped at three a lap, and every kind can be switched off.
@@ -50,12 +55,14 @@ Every call shows its confidence and the evidence behind it: game lap timing, gam
 - **Pit board.** Your position, the gap that matters and the lap, in figures you can read at a glance from the cockpit. In a race that's the car ahead, and whether you're closing or losing per lap. In qualifying it's how far you are off the fastest lap.
 - **Timing tower.** Every car in order with its team colour, its best lap (purple for the fastest) and the interval to the car ahead. F1 23 and later send that interval. For F1 22 PurpleSector measures it from each car's distance trace: how long ago the car ahead was where this one is now.
 - **You against the fastest.** Your best S1, S2, S3 and lap against the session's fastest, with who set each, from the game's own lap history. Your live sectors go purple when they beat everyone and green when they beat your own best.
-- **Corner calls.** Lose time in a corner and before the next one the engineer says how much and what was different there: "Corner 4, lost 0.2. Braked 11 metres earlier." Corners are numbered from your own speed trace and compared with your delta reference on lap distance.
+- **Corner calls.** Lose time in a corner and before the next one the engineer says how much and what was different there: "Corner 4, lost 2 tenths. Braked 11 metres earlier." Corners are numbered from your own speed trace and compared with your delta reference on lap distance.
 - **Race control.** Penalties with the infringement, safety cars and VSCs, red flags, retirements, fastest laps, and overtakes and contact involving you, all from the game's event packets. Your penalties, safety cars and red flags are read out.
 - **Weather.** The game's forecast for the session, and a call when it shows the track going wet or drying: once when it first appears and again five minutes out.
 - **Track map.** Drawn from your own driving, with a live dot for every car: you in white, the cars either side of you in grey (ahead filled, behind open).
 - **Fuel and tyres.** Fuel burned and tyre wear added each lap, read at the line. From that, laps of fuel left at your actual burn and your margin at the flag, next to the game's own pit window and rejoin position.
-- **Radio on request.** Assign any wheel button to a *UDP Action* in the game and press it mid-race for delta, gaps and fuel. Nothing is read out until you ask.
+- **Race radio.** In a race the engineer calls what you'd want to hear without asking: places gained or lost once they've settled, a car within a second ahead or behind, the gaps either side every few laps, five to go and the last lap, tyre wear passing 50 and 70 percent, fuel going short at your measured burn, the game's pit window, blue and yellow flags, new wing damage, and where you finished. The line calls for a lap come as one message, not a string of them.
+- **Radio on request.** Assign any wheel button to a *UDP Action* in the game and press it mid-race for position, laps to go, delta, gaps, fuel and tyres.
+- **The engineer's voice.** Pick it in the sidebar, with its own volume. Five neural voices (British, Scottish and American, from the [Piper](https://github.com/OHF-Voice/piper1-gpl) voice library) sound like a person and run offline after a one-time 61 MB download each; the Windows voices are always there as well. Every call comes through a team-radio channel, band-limited and compressed with the click of the channel opening and closing, which you can switch off in Settings. Give the engineer your name and it uses it now and then. Neural voices need running from source; the exe speaks with the Windows voices.
 - **Overlay.** One monitor? **Open overlay** puts a small always-on-top window over the game with delta, gear, gaps, fuel and the last call. It needs the game in borderless or windowed mode.
 
 ## After the session
@@ -159,7 +166,7 @@ flowchart LR
     P --> C
     E --> C
     Q --> C
-    C --> V[Voice thread<br>Windows SAPI]
+    C --> V[Voice thread<br>Piper or Windows SAPI<br>team-radio filter]
     L --> W[DB writer thread<br>SQLite]
     T --> UI[Streamlit dashboard]
     S --> O[Overlay endpoint<br>127.0.0.1 only]
@@ -210,6 +217,7 @@ flowchart LR
 | Overlay not over the game | Use borderless or windowed mode. If **Open overlay** is greyed out, another program holds the overlay port; change it in Settings. |
 | Wheel button does nothing | The *UDP Action* number must match in the game and in Settings. **Radio check** works either way. |
 | No voice | Press **Test voice**. If it says *unavailable*, Windows speech isn't installed (*Settings → Time & language → Speech*). Everything else keeps working. |
+| Voice sounds robotic | A neural voice that isn't downloaded yet falls back to the Windows voice: the sidebar says so under the picker and offers the download. |
 
 ```powershell
 .venv\Scripts\python scripts\diagnostics.py check    # Python, packages, port, voice, database
@@ -251,10 +259,10 @@ app.py          Streamlit entry point and navigation
 service.py      AppService: owns every subsystem and the data flow
 overlay.py      always-on-top overlay window and its localhost endpoint
 telemetry/      records, per-year layouts, decoder, UDP receiver, packet capture, state
-analysis/       lap tracker, comparison, coach, corner calls, gaps, field timing, race control,
+analysis/       lap tracker, comparison, coach, corner calls, race radio, gaps, field timing, race control,
                 weather, track map, fuel and tyres, setups, tyre life
 storage/        SQLite schema and migrations, repository, background writer
-voice/          priority speech queue, SAPI worker
+voice/          priority speech queue, Piper and SAPI voices, team-radio filter
 demo/           deterministic race simulator
 ui/             pages and shared components
 static/         bundled Barlow font files (SIL Open Font License)

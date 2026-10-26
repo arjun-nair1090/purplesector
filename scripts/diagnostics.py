@@ -50,9 +50,15 @@ def check(settings) -> int:
     finally:
         s.close()
     try:
-        from voice.speaker import default_engine_factory
-        default_engine_factory()
+        from voice import engines
+        engines.make_synth("sapi:")
         print("  [ok] Windows speech (SAPI) available")
+        spec, why = engines.resolve(settings.voice_name, settings.data_path / "voices")
+        if spec.startswith("piper:"):
+            engines.make_synth(spec)
+            print(f"  [ok] engineer's voice {settings.voice_name} loads")
+        elif why:
+            print(f"  [info] {why}")
     except Exception as exc:
         print(f"  [warn] voice unavailable: {exc} (the app still works without voice)")
     db = settings.data_path / "purplesector.db"

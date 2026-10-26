@@ -333,6 +333,17 @@ def test_demo_race_map_has_every_car(race):
     assert roles == ["ahead", "behind", "other", "player"]
 
 
+def test_race_line_call_is_spoken_with_position_and_gaps(race):
+    app, _, engine = race
+    facts = app._radio_facts()
+    assert facts["position"] and facts["laps_left"] and facts["tyre_wear"]
+    n = len(engine.spoken)
+    app._race_line(3)  # a routine lap (every 3 by default): position and both gaps
+    e = app.coach.events[-1]
+    assert e.key == "race_line:3" and e.spoken.startswith(f"P{facts['position']}.")
+    assert wait_until(lambda: len(engine.spoken) > n) and engine.spoken[-1] == e.spoken
+
+
 def test_radio_check_and_wheel_button(race):
     app, _, engine = race
     n = len(engine.spoken)

@@ -14,6 +14,7 @@ from enum import IntEnum, StrEnum
 
 from analysis.lap_comparison import compare_laps, samples_frame
 from analysis.lap_tracker import CompletedLap
+from analysis.radio_speech import WHEEL_NAMES, pick, say_gap, say_name, say_signed, say_time, with_name
 from analysis.statistics import brake_rise_times
 from analysis.track_map import corners_in
 
@@ -39,6 +40,7 @@ class Category(StrEnum):
     WEATHER = "Weather"
     RACE_CONTROL = "Race control"
     CORNERS = "Corners"
+    RACE = "Race"
     PERSONAL_RECORD = "Personal records"
     SYSTEM = "System"
 
@@ -66,12 +68,6 @@ def fmt_lap(ms: int | None) -> str:
     return f"{m}:{rem / 1000:06.3f}" if m else f"{rem / 1000:.3f}"
 
 
-def _spoken_time(ms: int) -> str:
-    m, rem = divmod(int(ms), 60_000)
-    s = rem / 1000
-    return f"{m} {s:.1f}" if m else f"{s:.1f} seconds"
-
-
 @dataclass
 class CoachConfig:
     verbosity: str = "normal"
@@ -82,24 +78,29 @@ class CoachConfig:
     brake_abrupt_ratio: float = 0.6
     brake_min_diff_s: float = 0.04
     min_reference_laps: int = 2
+    driver_name: str = ""
 
     @classmethod
     def from_settings(cls, s) -> CoachConfig:
         return cls(verbosity=s.coach_verbosity, min_confidence=s.coach_min_confidence, cooldown_s=s.coach_cooldown_s,
                    sector_loss_threshold_s=s.sector_loss_threshold_s,
-                   segment_loss_threshold_s=s.segment_loss_threshold_s, brake_abrupt_ratio=s.brake_abrupt_ratio)
+                   segment_loss_threshold_s=s.segment_loss_threshold_s, brake_abrupt_ratio=s.brake_abrupt_ratio,
+                   driver_name=s.driver_name.strip())
 
 
 # ---------------- rules (pure) ----------------
 
-def rule_lap_completed(lap: CompletedLap) -> CoachEvent | None:
+def rule_lap_completed(lap: CompletedLap, race: bool = False) -> CoachEvent | None:
+    """Every lap's time. In a race the line call carries the race instead, so the bare time drops to
+    low priority (detailed verbosity only)."""
     if lap.lap_time_ms <= 0:
         return None
     status = "" if lap.valid else " (invalid)"
+    t = say_time(lap.lap_time_ms)
+    speech = pick(f"{t}.", f"Lap time {t}.", f"That's a {t}.") if lap.valid else f"{t}, but the lap's invalid."
     return CoachEvent(f"lap_done:{lap.lap_number}", Category.LAP_PERFORMANCE,
-                      f"Lap {lap.lap_number}: {fmt_lap(lap.lap_time_ms)}{status}", Priority.MEDIUM, Confidence.HIGH,
-                      "Game lap timing", speech=f"Lap {lap.lap_number}, {_spoken_time(lap.lap_time_ms)}"
-                      + ("" if lap.valid else ", invalid"))
+                      f"Lap {lap.lap_number}: {fmt_lap(lap.lap_time_ms)}{status}",
+                      Priority.LOW if race else Priority.MEDIUM, Confidence.HIGH, "Game lap timing", speech=speech)
 
 
 def rule_session_best(lap: CompletedLap, previous_best: CompletedLap | None) -> CoachEvent | None:
@@ -110,10 +111,13 @@ def rule_session_best(lap: CompletedLap, previous_best: CompletedLap | None) -> 
     return CoachEvent(f"pb:{lap.lap_number}", Category.PERSONAL_RECORD,
                       f"Session best: {fmt_lap(lap.lap_time_ms)} (−{gain:.3f} s)", Priority.HIGH,
                       Confidence.HIGH, f"Valid lap {lap.lap_number} vs previous best lap {previous_best.lap_number} "
-                      "(game timing)", speech=f"Session best by {gain:.2f} seconds. Nice lap.")
+                      "(game timing)", speech=pick(f"Session best, {say_gap(gain)} quicker. Good lap.",
+                                                   f"That's your best of the session, up {say_gap(gain)}.",
+                                                   f"Best lap of the session, {say_gap(gain)} quicker. Nice."))
 
 
-def rule_alltime_best(lap: CompletedLap, alltime_ms: int | None, track: str | None) -> CoachEvent | None:
+def rule_alltime_best(lap: CompletedLap, alltime_ms: int | None, track: str | None,
+                      name: str | None = None) -> CoachEvent | None:
     """Beats the best valid lap PurpleSector has ever recorded on this track (same source)."""
     if not lap.timed or alltime_ms is None or lap.lap_time_ms >= alltime_ms:
         return None
@@ -122,7 +126,8 @@ def rule_alltime_best(lap: CompletedLap, alltime_ms: int | None, track: str | No
     return CoachEvent(f"alltime_pb:{lap.lap_number}", Category.PERSONAL_RECORD,
                       f"Personal best at {where}: {fmt_lap(lap.lap_time_ms)} (−{gain:.3f} s)", Priority.HIGH,
                       Confidence.HIGH, f"Valid lap {lap.lap_number} vs your best recorded lap {fmt_lap(alltime_ms)} "
-                      "(game timing)", speech=f"Personal best! {gain:.2f} seconds quicker than your best recorded lap here.")
+                      "(game timing)", speech=with_name(pick("Personal best!", "That's a PB!", "New personal best!"),
+                                                         name) + f" {say_gap(gain)} quicker than you've ever been here.")
 
 
 def rule_sector_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s: float) -> CoachEvent | None:
@@ -138,7 +143,8 @@ def rule_sector_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s: 
                       Priority.MEDIUM, Confidence.HIGH,
                       f"Game sector times: lap {lap.lap_number} S{worst + 1} {fmt_lap(lap.sectors[worst])} vs "
                       f"best lap {best.lap_number} {fmt_lap(best.sectors[worst])}",
-                      speech=f"Sector {worst + 1} was {deltas[worst]:.1f} slower than your best.")
+                      speech=pick(f"Lost {say_gap(deltas[worst])} in sector {worst + 1}.",
+                                  f"Sector {worst + 1} was {say_gap(deltas[worst])} down on your best."))
 
 
 def rule_segment_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s: float,
@@ -157,7 +163,8 @@ def rule_segment_loss(lap: CompletedLap, best: CompletedLap | None, threshold_s:
     where = f"{seg.start_m:.0f}–{seg.end_m:.0f} m" + (f" ({corner})" if corner else "")
     msg = f"Lost {seg.time_delta_s:.2f} s vs best lap at {where}"
     place = corner or f"around {int(round(seg.start_m, -2))} metres"
-    speech = f"Lost {seg.time_delta_s:.1f} {'at ' + place if corner else place} versus your best lap."
+    lost, at = say_gap(seg.time_delta_s), "at " + place if corner else place
+    speech = pick(f"Lost {lost} {at} to your best lap.", f"You dropped {lost} {at} on your best lap.")
     if obs:
         msg += ". Observed: " + "; ".join(obs).lower()
         speech += f" {obs[0]}."
@@ -184,37 +191,53 @@ def rule_brake_abruptness(lap: CompletedLap, previous: list[CompletedLap], ratio
                       "Brake input was noticeably more abrupt than on your previous laps", Priority.MEDIUM,
                       Confidence.MEDIUM, f"Median brake rise {cur_m * 1000:.0f} ms vs {ref_m * 1000:.0f} ms "
                       f"over {len(ref_medians)} previous laps ({len(cur)} brake applications)",
-                      speech="Brake input is unusually abrupt compared with your previous laps.")
+                      speech="You're hitting the brakes harder than on your earlier laps.")
 
 
-def _say_s(x: float) -> str:
-    return f"{'minus' if x < 0 else 'plus'} {abs(x):.1f}"
+def gap_trend(change_per_lap_s: float | None) -> str:
+    """", closing two tenths a lap" from the gap's change over your last lap; empty when it barely moved."""
+    if change_per_lap_s is None or abs(change_per_lap_s) < 0.05:
+        return ""
+    return f", {'closing' if change_per_lap_s < 0 else 'opening'} {say_gap(change_per_lap_s)} a lap"
+
+
+def worst_tyre(wear_pct: tuple | None) -> tuple[str, float] | None:
+    """(wheel name, wear) of the most worn tyre; wear tuples are in the game's RL, RR, FL, FR order."""
+    if not wear_pct:
+        return None
+    i = max(range(len(wear_pct)), key=lambda k: wear_pct[k])
+    return WHEEL_NAMES[("RL", "RR", "FL", "FR")[i]], wear_pct[i]
 
 
 def radio_report(n: int, *, delta_s=None, delta_ref=None, gaps=None, fuel_margin_laps=None,
-                 fuel_margin_source=None, last_lap_ms=None) -> CoachEvent:
+                 fuel_margin_source=None, last_lap_ms=None, position=None, laps_left=None,
+                 tyre_wear=None) -> CoachEvent:
     """The status call the driver asked for (wheel button or Radio check). Only facts that are available
     right now are read out; nothing is filled in."""
     parts, said = [], []
+    if position:
+        parts.append(f"P{position}" + (f", {laps_left} laps to go" if laps_left else ""))
+        said.append(f"P{position}" + (f", {laps_left} to go." if laps_left else "."))
     if delta_s is not None:
         parts.append(f"Delta {fmt_signed(delta_s)} s vs {delta_ref}")
-        said.append(f"Delta {_say_s(delta_s)}.")
+        said.append(f"Delta {say_signed(delta_s)}.")
     elif last_lap_ms:
         parts.append(f"Last lap {fmt_lap(last_lap_ms)}")
-        said.append(f"Last lap {_spoken_time(last_lap_ms)}.")
+        said.append(f"Last lap {say_time(last_lap_ms)}.")
     for key, label in (("ahead", "ahead"), ("behind", "behind")):
         g = (gaps or {}).get(key)
         if g is None or g.gap_s is None:
             continue
-        trend = ""
-        if g.change_per_lap_s is not None and abs(g.change_per_lap_s) >= 0.05:
-            closing = g.change_per_lap_s < 0
-            trend = f", {'closing' if closing else 'opening'} {abs(g.change_per_lap_s):.1f} a lap"
+        trend = gap_trend(g.change_per_lap_s)
         parts.append(f"P{g.position} {g.name} {label} {g.gap_s:.1f} s{trend}")
-        said.append(f"Gap {label} {g.gap_s:.1f}{trend}.")
+        said.append(f"Gap {label} {g.gap_s:.1f} to {say_name(g.name)}{trend}.")
     if fuel_margin_laps is not None:
         parts.append(f"Fuel {fmt_signed(fuel_margin_laps, 1)} laps ({fuel_margin_source})")
-        said.append(f"Fuel {_say_s(fuel_margin_laps)} laps.")
+        said.append(f"Fuel {say_signed(fuel_margin_laps)} laps.")
+    worst = worst_tyre(tyre_wear)
+    if worst is not None:
+        parts.append(f"Tyre wear {worst[1]:.0f}% ({worst[0]})")
+        said.append(f"Tyres {worst[1]:.0f} percent, {worst[0]} the worst.")
     if not parts:
         return CoachEvent(f"radio:{n}", Category.SYSTEM, "Radio check: no live data yet", Priority.HIGH,
                           Confidence.HIGH, "Requested status report", speech="No data yet.")
@@ -263,7 +286,7 @@ class Coach:
         return True
 
     def on_lap_completed(self, lap: CompletedLap, tracker, alltime_ms: int | None = None,
-                         track: str | None = None, corners=None) -> list[CoachEvent]:
+                         track: str | None = None, corners=None, race: bool = False) -> list[CoachEvent]:
         """`tracker.laps` already contains `lap` as its last entry. `alltime_ms` is the recorded best
         on this track from earlier sessions (None if there is no history)."""
         c = self.config
@@ -271,9 +294,9 @@ class Coach:
         prev_best = min((p for p in previous if p.timed), key=lambda p: p.lap_time_ms, default=None)
         if alltime_ms is not None and prev_best is not None:
             alltime_ms = min(alltime_ms, prev_best.lap_time_ms)  # must also beat earlier laps this session
-        alltime = rule_alltime_best(lap, alltime_ms, track)
+        alltime = rule_alltime_best(lap, alltime_ms, track, c.driver_name)
         # an all-time PB supersedes the session-best call
-        candidates = [alltime or rule_session_best(lap, prev_best), rule_lap_completed(lap)]
+        candidates = [alltime or rule_session_best(lap, prev_best), rule_lap_completed(lap, race)]
         if prev_best is not None and lap is not prev_best:
             candidates += [
                 rule_sector_loss(lap, prev_best, c.sector_loss_threshold_s),

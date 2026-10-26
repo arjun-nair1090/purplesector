@@ -31,8 +31,11 @@ class Settings:
     udp_port: int = 20777
     mode: str = "live"
     voice_enabled: bool = True
-    voice_rate: int = 0                # SAPI rate, -10 (slow) .. 10 (fast)
+    voice_rate: int = 0                # -10 (slow) .. 10 (fast), 0 is the voice's own pace
     voice_volume: int = 90             # 0 .. 100
+    voice_name: str = "piper:en_GB-northern_english_male-medium"  # piper:<model> or sapi:<Windows voice>
+    voice_radio_fx: bool = True        # team-radio sound: band-limited, compressed, with the channel clicks
+    driver_name: str = ""              # what the engineer calls you; empty = no name
     voice_min_interval_s: float = 4.0
     coach_verbosity: str = "normal"
     coach_min_confidence: str = "medium"
@@ -51,6 +54,8 @@ class Settings:
     overlay_port: int = 8777           # localhost endpoint the always-on-top overlay reads
     corner_calls: bool = True          # a call after each corner that lost time to the delta reference
     corner_loss_threshold_s: float = 0.15
+    race_radio: bool = True            # race calls: position, DRS battles, laps to go, tyres, fuel, flags, damage
+    race_update_laps: int = 3          # a gaps update at the line every N laps in a race; 0 = only when it matters
 
     @property
     def data_path(self) -> Path:
@@ -82,6 +87,11 @@ class Settings:
         _range(e, "demo_speed", self.demo_speed, 0.25, 8)
         _range(e, "radio_button", self.radio_button, 0, 12)
         _range(e, "corner_loss_threshold_s", self.corner_loss_threshold_s, 0.02, 5)
+        _range(e, "race_update_laps", self.race_update_laps, 0, 20)
+        if self.voice_name.partition(":")[0] not in ("piper", "sapi"):
+            e["voice_name"] = "Must be a Piper voice (piper:<model>) or a Windows voice (sapi:<name>)."
+        if len(self.driver_name) > 24:
+            e["driver_name"] = "Keep the name to 24 characters or fewer."
         if not 1024 <= self.overlay_port <= 65535:
             e["overlay_port"] = "Port must be between 1024 and 65535."
         elif self.overlay_port == self.udp_port:

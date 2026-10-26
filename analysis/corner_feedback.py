@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from analysis.coach import Category, CoachEvent, Confidence, Priority
 from analysis.lap_comparison import Segment, samples_frame, segment_between
+from analysis.radio_speech import say_gap
 
 BEFORE_M, AFTER_M = 200.0, 100.0
 MIN_LOSS_S = 0.01  # below this, alignment noise
@@ -56,7 +57,7 @@ class CornerResult:
         return CoachEvent(f"corner:{n}", Category.CORNERS, msg, Priority.MEDIUM, Confidence.MEDIUM,
                           f"Distance-aligned telemetry vs {ref}, {s.start_m:.0f}–{s.end_m:.0f} m; corner numbers are "
                           "detected from your speed trace; input differences are observations, not proven causes",
-                          speech=f"Corner {n}, lost {s.time_delta_s:.1f}." + (f" {said[0]}" if said else ""))
+                          speech=f"Corner {n}, lost {say_gap(s.time_delta_s)}." + (f" {said[0]}" if said else ""))
 
 
 class CornerCoach:

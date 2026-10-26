@@ -1,8 +1,9 @@
 """Offline voice output on a dedicated worker thread.
 
-Backend: Windows SAPI (SAPI.SpVoice via comtypes), initialised inside the worker
-thread. pyttsx3 was evaluated but its runAndWait() never returned when driven from
-a worker thread on this Python/Windows combination, so it is not used.
+The engine (voice.engines.RadioEngine) renders each call with the chosen voice, Piper or
+Windows SAPI, puts it through the team-radio effect and plays it, all inside the worker
+thread. pyttsx3 was evaluated but its runAndWait() never returned when driven from a
+worker thread on this Python/Windows combination, so it is not used.
 If no engine can be created the coach keeps working silently (status "unavailable").
 """
 from __future__ import annotations
@@ -17,37 +18,23 @@ from voice.queue_manager import SpeechItem, SpeechQueue
 log = logging.getLogger(__name__)
 
 
-class SapiEngine:
-    def __init__(self):
-        import ctypes
-
-        ctypes.windll.ole32.CoInitialize(None)  # COM must be initialised on the speaking thread
-        import comtypes.client
-
-        self._voice = comtypes.client.CreateObject("SAPI.SpVoice")
-
-    def configure(self, rate: int, volume: int) -> None:
-        self._voice.Rate = int(rate)        # -10 .. 10
-        self._voice.Volume = int(volume)    # 0 .. 100
-
-    def speak(self, text: str) -> None:
-        self._voice.Speak(text, 0)          # synchronous, on this worker thread only
-
-
 def default_engine_factory():
     if sys.platform != "win32":
-        raise RuntimeError("Voice output requires Windows SAPI")
-    return SapiEngine()
+        raise RuntimeError("Voice output requires Windows")
+    from voice.engines import RadioEngine
+
+    return RadioEngine()
 
 
 class VoiceCoach:
     def __init__(self, queue: SpeechQueue | None = None, engine_factory=default_engine_factory, *,
                  enabled: bool = True, rate: int = 0, volume: int = 90, min_interval_s: float = 4.0,
-                 clock=time.monotonic):
+                 voice: str | None = None, radio: bool = True, clock=time.monotonic):
         self.queue = queue or SpeechQueue()
         self._factory = engine_factory
         self.enabled = enabled
         self.rate, self.volume, self.min_interval_s = rate, volume, min_interval_s
+        self.voice, self.radio = voice, radio  # engine voice spec (voice.engines.resolve) and radio effect
         self._clock = clock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -74,7 +61,8 @@ class VoiceCoach:
         self._thread = None
         self.status = "stopped"
 
-    def configure(self, *, enabled=None, rate=None, volume=None, min_interval_s=None) -> None:
+    def configure(self, *, enabled=None, rate=None, volume=None, min_interval_s=None, voice=None,
+                  radio=None) -> None:
         if enabled is not None:
             self.enabled = enabled
             if not enabled:
@@ -85,6 +73,10 @@ class VoiceCoach:
             self.volume = volume
         if min_interval_s is not None:
             self.min_interval_s = min_interval_s
+        if voice is not None:
+            self.voice = voice
+        if radio is not None:
+            self.radio = radio
         self._dirty = True
 
     def say(self, text: str, priority: int = 2, key: str = "") -> bool:
@@ -97,7 +89,7 @@ class VoiceCoach:
         """Explicit user action: speaks even if coaching voice is switched off."""
         if self.status == "unavailable":
             return False
-        return self.queue.put(SpeechItem("PurpleSector voice check. Radio is working.", 3, "voice_test"))
+        return self.queue.put(SpeechItem("Radio check. Loud and clear, how do you read?", 3, "voice_test"))
 
     def _run(self) -> None:
         try:
@@ -109,6 +101,9 @@ class VoiceCoach:
             return
         self.status = "ready"
         while not self._stop.is_set():
+            if self._dirty:
+                # a new voice loads now, not when the next call is due (a neural voice takes a few seconds)
+                self._configure(engine)
             if self._last_spoken_at is not None:
                 # wait out the minimum gap first, so we then pick the most urgent *fresh* message
                 wait = self.min_interval_s - (self._clock() - self._last_spoken_at)
@@ -121,11 +116,19 @@ class VoiceCoach:
                 continue
             try:
                 if self._dirty:
-                    engine.configure(self.rate, self.volume)
-                    self._dirty = False
+                    self._configure(engine)
                 engine.speak(item.text)
                 self.last_spoken, self.spoken_count = item.text, self.spoken_count + 1
                 self._last_spoken_at = self._clock()
             except Exception as exc:
                 self.last_error = f"Speech failed: {exc}"
                 log.warning(self.last_error)
+
+    def _configure(self, engine) -> None:
+        self._dirty = False
+        try:
+            engine.configure(self.rate, self.volume, voice=self.voice, radio=self.radio)
+            self.last_error = getattr(engine, "fallback_reason", None)
+        except Exception as exc:
+            self.last_error = f"Voice settings failed: {exc}"
+            log.warning(self.last_error)
